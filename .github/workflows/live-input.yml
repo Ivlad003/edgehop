@@ -33,6 +33,7 @@ jobs:
           sudo modprobe uinput || true
           ls -l /dev/uinput /dev/input/
       - name: Capture and injection through the kernel
+        shell: bash   # with pipefail, so a failing test is not hidden by tee
         run: |
           go test -c -o live.test ./internal/input/
           sudo EDGEHOP_LIVE=1 ./live.test -test.run Live -test.v -test.timeout 180s 2>&1 | tee live.log
@@ -47,6 +48,7 @@ jobs:
         with:
           go-version: stable
       - name: Capture and injection through the window server
+        shell: bash   # with pipefail, so a failing test is not hidden by tee
         run: |
           EDGEHOP_LIVE=1 go test ./internal/input/ -run Live -v -timeout 180s 2>&1 | tee live.log
           if grep -q -- '--- SKIP' live.log; then echo "::error::the live input tests were skipped"; exit 1; fi

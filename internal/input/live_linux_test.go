@@ -190,15 +190,21 @@ func TestLiveInjector(t *testing.T) {
 	ptr := openReader(t, findNode(t, virtualPrefix+" pointer"))
 	time.Sleep(200 * time.Millisecond)
 
-	// Every key edgehop knows, pressed and released.
-	var want []ev
-	for _, code := range keys.Codes() {
+	// Every key edgehop knows, pressed and released. They are read back in
+	// small batches: the kernel keeps only 64 unread events per reader.
+	var got, want []ev
+	codes := keys.Codes()
+	for i, code := range codes {
 		inj.Key(code, keys.Down)
 		inj.Key(code, keys.Repeat) // must be dropped: the desktop repeats by itself
 		inj.Key(code, keys.Up)
 		want = append(want, ev{evKey, code, 1}, ev{evKey, code, 0})
+		if i%8 == 7 || i == len(codes)-1 {
+			got = append(got, kbd.collect(40*time.Millisecond)...)
+		}
 	}
-	expectEvs(t, fmt.Sprintf("%d keys", len(keys.Codes())), kbd.collect(300*time.Millisecond), want)
+	expectEvs(t, fmt.Sprintf("%d keys", len(codes)), got, want)
+	t.Logf("injection: %d keys delivered by the kernel exactly as sent", len(codes))
 
 	inj.MoveAbs(100, 200)
 	inj.MoveAbs(1279, 0)
