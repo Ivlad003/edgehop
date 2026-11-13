@@ -45,8 +45,30 @@
 
 ## Швидкий старт
 
-Потрібен один файл `edgehop` (або `edgehop.exe`) на кожному комп'ютері:
-завантажте його зі сторінки проєкту або зберіть самі (розділ «Збірка»).
+Потрібен один файл `edgehop` (або `edgehop.exe`) на кожному комп'ютері.
+Найшвидше поставити його з термінала.
+
+macOS і Linux:
+
+```
+curl -fsSL https://raw.githubusercontent.com/Ivlad003/edgehop/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```
+irm https://raw.githubusercontent.com/Ivlad003/edgehop/main/install.ps1 | iex
+```
+
+Скрипт завантажує останній реліз саме для вашого комп'ютера, перевіряє
+контрольну суму SHA-256 і кладе програму в теку користувача (`~/.local/bin`
+або `%LOCALAPPDATA%\Programs\edgehop`), права адміністратора не потрібні. На
+Windows він також додає цю теку до PATH користувача. Конкретну версію можна
+задати змінною `EDGEHOP_VERSION=v0.1.0`, іншу теку — `EDGEHOP_INSTALL_DIR`.
+
+Готові файли для Windows (x64, ARM64), macOS (Apple Silicon, Intel) і Linux
+(x64, ARM64) лежать на [сторінці релізів](https://github.com/Ivlad003/edgehop/releases/latest);
+зібрати самому — розділ «Збірка».
 
 **1. Запустіть `edgehop` на кожному комп'ютері.** У браузері відкриється
 сторінка налаштувань.

@@ -45,6 +45,30 @@ function detectSystem() {
   return null;
 }
 
+// The quick-install commands fetch the scripts straight from the repository.
+function setCommands() {
+  if (!repo) return;
+  const raw = 'https://raw.githubusercontent.com/' + repo + '/main/';
+  document.getElementById('cmd-sh').textContent = 'curl -fsSL ' + raw + 'install.sh | sh';
+  document.getElementById('cmd-ps').textContent = 'irm ' + raw + 'install.ps1 | iex';
+}
+
+async function copyCommand(button) {
+  const text = document.getElementById(button.dataset.copy).textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    const area = document.createElement('textarea');
+    area.value = text;
+    document.body.append(area);
+    area.select();
+    document.execCommand('copy');
+    area.remove();
+  }
+  button.textContent = lang === 'uk' ? 'Скопійовано' : 'Copied';
+  setTimeout(() => { button.textContent = lang === 'uk' ? button.dataset.uk : button.dataset.en; }, 1300);
+}
+
 function setMainDownload() {
   const sys = detectSystem();
   const button = document.getElementById('main-download');
@@ -93,7 +117,11 @@ function init() {
     else if ((navigator.language || '').toLowerCase().startsWith('uk')) lang = 'uk';
   } catch (e) { /* storage may be unavailable */ }
   setLinks();
+  setCommands();
   setMainDownload();
+  for (const button of document.querySelectorAll('button.copy')) {
+    button.addEventListener('click', () => copyCommand(button));
+  }
   applyLanguage();
   document.getElementById('lang').addEventListener('click', () => {
     lang = lang === 'uk' ? 'en' : 'uk';

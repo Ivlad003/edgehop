@@ -105,6 +105,23 @@
   <section id="download" class="block">
     <h2 data-uk="Завантажити">Download</h2>
     <p class="small" id="release-info"></p>
+
+    <div class="quick">
+      <h3 data-uk="Швидка інсталяція з термінала">Quick install from the terminal</h3>
+      <div class="quick-row">
+        <span class="quick-os">macOS · Linux</span>
+        <code id="cmd-sh">curl -fsSL https://raw.githubusercontent.com/Ivlad003/edgehop/main/install.sh | sh</code>
+        <button type="button" class="copy" data-copy="cmd-sh" data-uk="Копіювати">Copy</button>
+      </div>
+      <div class="quick-row">
+        <span class="quick-os">Windows · PowerShell</span>
+        <code id="cmd-ps">irm https://raw.githubusercontent.com/Ivlad003/edgehop/main/install.ps1 | iex</code>
+        <button type="button" class="copy" data-copy="cmd-ps" data-uk="Копіювати">Copy</button>
+      </div>
+      <p class="small" data-uk="Скрипт завантажує останню версію саме для вашого комп'ютера, перевіряє контрольну суму й кладе програму у вашу теку користувача — права адміністратора не потрібні. Після цього запустіть: edgehop">The script downloads the latest version for your computer, verifies its checksum and puts the program into your user folder — no administrator rights needed. Then start it with: edgehop</p>
+    </div>
+
+    <h3 class="sub" data-uk="Або завантажте файл вручну">Or download the file yourself</h3>
     <div class="downloads">
       <div class="dl">
         <h3>Windows</h3>

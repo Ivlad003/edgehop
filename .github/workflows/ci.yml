@@ -25,6 +25,8 @@ jobs:
         run: go test -count=1 ./...
       - name: Build
         run: go build ./cmd/edgehop
+      - name: Start the program once (lists the screens of this machine)
+        run: go run ./cmd/edgehop info
 
   cross-build:
     runs-on: ubuntu-latest
@@ -39,3 +41,29 @@ jobs:
         with:
           name: edgehop-binaries
           path: dist/
+
+  # Runs the quick-install scripts against the latest published release and
+  # starts the installed program, on a real machine of each system.
+  installers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: |
+          EDGEHOP_INSTALL_DIR="$RUNNER_TEMP/edgehop-bin" sh install.sh
+          "$RUNNER_TEMP/edgehop-bin/edgehop" version
+          "$RUNNER_TEMP/edgehop-bin/edgehop" info
+      - name: install.ps1 (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:EDGEHOP_INSTALL_DIR = Join-Path $env:RUNNER_TEMP 'edgehop-bin'
+          $env:EDGEHOP_NO_PATH = '1'
+          Get-Content -Raw ./install.ps1 | Invoke-Expression
+          & (Join-Path $env:EDGEHOP_INSTALL_DIR 'edgehop.exe') version
+          & (Join-Path $env:EDGEHOP_INSTALL_DIR 'edgehop.exe') info
