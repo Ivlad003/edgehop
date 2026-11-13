@@ -558,6 +558,7 @@ function renderLive(force) {
     pill.classList.add(st.connected ? 'on' : 'wait');
     line.textContent = !st.connected ? clientProblem(st)
       : st.active ? t('clientActive', st.server) : t('clientConnected', st.server);
+    if (st.clipboard) hint.textContent = t('clipLast', st.clipboard);
   }
 
   renderOthers();

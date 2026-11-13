@@ -158,10 +158,11 @@ func eventually(t *testing.T, what string, cond func() bool) {
 }
 
 type rig struct {
-	t   *testing.T
-	srv *server.Server
-	cap *fakeCapture
-	key string
+	clients map[string]*client.Client
+	t       *testing.T
+	srv     *server.Server
+	cap     *fakeCapture
+	key     string
 }
 
 func startServer(t *testing.T, name string, row []string, screens map[string]server.ScreenOpts) *rig {
@@ -197,7 +198,7 @@ func startServerWith(t *testing.T, name string, row []string, screens map[string
 		cancel()
 		<-done
 	})
-	return &rig{t: t, srv: srv, cap: fc, key: "test-key"}
+	return &rig{t: t, srv: srv, cap: fc, key: "test-key", clients: map[string]*client.Client{}}
 }
 
 // connect starts a client and waits until the server sees it (with UDP up).
@@ -215,6 +216,7 @@ func (r *rig) connectWith(name string, w, h int, adjust func(*client.Config)) (*
 		adjust(&cc)
 	}
 	c := client.New(cc, inj)
+	r.clients[name] = c
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { c.Run(ctx); close(done) }()

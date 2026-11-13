@@ -734,7 +734,7 @@ func (s *Server) key(code uint16, state uint8) {
 	if !isHeld {
 		if s.cfg.Hotkey.Match(code, func(c uint16) bool { _, ok := s.held[c]; return ok }) {
 			logx.Infof("release hotkey: back to %s", s.cfg.Name)
-			s.clipSwitched(sess.name, s.cfg.Name)
+			s.clipMoved(sess.name, s.cfg.Name)
 			s.leaveRemote()
 			s.setFocus(nil)
 			s.cap.Release(0, 0, false)
@@ -760,7 +760,7 @@ func (s *Server) leaveLocal(side layout.Side, frac float64) {
 	}
 	s.cap.Grab()
 	s.enter(sess, side.Opposite(), frac)
-	s.clipSwitched(s.cfg.Name, sess.name)
+	s.clipMoved(s.cfg.Name, sess.name)
 	logx.Debugf("cursor: %s -> %s", s.cfg.Name, sess.name)
 }
 
@@ -842,17 +842,16 @@ func (s *Server) cross(sess *session, side layout.Side, nx, ny float64) bool {
 	} else if maxX > 0 {
 		frac = math.Max(0, math.Min(nx, maxX)) / maxX
 	}
+	s.clipMoved(sess.name, target) // before the client hears about it
 	s.leaveRemote()
 	if target == s.cfg.Name {
 		s.setFocus(nil)
 		s.cap.Release(side.Opposite(), frac, true)
-		s.clipSwitched(sess.name, s.cfg.Name)
 		logx.Debugf("cursor: %s -> %s", sess.name, s.cfg.Name)
 		return true
 	}
 	next := s.byName[target]
 	s.enter(next, side.Opposite(), frac)
-	s.clipSwitched(sess.name, next.name)
 	logx.Debugf("cursor: %s -> %s", sess.name, next.name)
 	return true
 }
@@ -886,10 +885,10 @@ func (s *Server) settle() {
 	sess.send(proto.AppendMotion(sess.buf[:0], s.mseq, s.sentX, s.sentY))
 }
 
-// clipSwitched tells the clipboard hub that the cursor moved between screens.
-func (s *Server) clipSwitched(from, to string) {
+// clipMoved tells the clipboard hub that the cursor moves between screens.
+func (s *Server) clipMoved(from, to string) {
 	if s.clip != nil {
-		s.clip.switched(from, to)
+		s.clip.moved(from, to)
 	}
 }
 
@@ -912,6 +911,16 @@ func (s *Server) ClipboardStatus() string {
 		return ""
 	}
 	return s.clip.status()
+}
+
+// ClipboardTransfers counts the clipboard transfers completed so far.
+func (s *Server) ClipboardTransfers() int64 {
+	if s.clip == nil {
+		return 0
+	}
+	s.clip.mu.Lock()
+	defer s.clip.mu.Unlock()
+	return s.clip.count
 }
 
 // handleData serves a client's data connection: the channel that carries

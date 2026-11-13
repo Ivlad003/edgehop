@@ -26,7 +26,8 @@ type clipSync struct {
 	mu   sync.Mutex
 	mark string // this computer's clipboard mark at the last sync
 
-	sendMu sync.Mutex // one bundle at a time
+	sendMu sync.Mutex   // one bundle at a time
+	note   func(string) // records the last transfer
 	recv   xfer.Receiver
 }
 
@@ -57,6 +58,11 @@ func (c *Client) openClipboard(ctx context.Context, control *secure.Channel, wel
 		control: control,
 		data:    data,
 		recv:    xfer.Receiver{Dir: c.cfg.ClipDir, Limit: c.cfg.ClipLimit},
+		note: func(msg string) {
+			c.clipNote.Store(msg)
+			c.clipCount.Add(1)
+			logx.Infof("clipboard: %s", msg)
+		},
 	}
 }
 
@@ -94,7 +100,7 @@ func (s *clipSync) receive() {
 		s.mu.Lock()
 		s.mark = mark
 		s.mu.Unlock()
-		logx.Infof("clipboard: received %s", res.Stats)
+		s.note("received " + res.Stats.String())
 	}
 }
 
@@ -125,7 +131,7 @@ func (s *clipSync) send(id uint32) {
 	st, err := xfer.Send(s.data.Send, id, content, s.limit)
 	switch {
 	case err == nil:
-		logx.Infof("clipboard: sent %s", st)
+		s.note("sent " + st.String())
 	case errors.Is(err, xfer.ErrTooLarge):
 		s.data.Send(xfer.Abort(id))
 		logx.Infof("clipboard: not shared: %s is over the size limit of %s", xfer.Size(st.Bytes), xfer.Size(s.limit))

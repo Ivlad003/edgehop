@@ -51,6 +51,8 @@ type Client struct {
 	connected atomic.Bool
 	active    atomic.Bool
 	lastErr   atomic.Value // string: why the last connection attempt failed
+	clipNote  atomic.Value // string: the last clipboard transfer
+	clipCount atomic.Int64 // completed clipboard transfers
 }
 
 // New creates a client.
@@ -67,6 +69,15 @@ func (c *Client) LastError() string {
 	s, _ := c.lastErr.Load().(string)
 	return s
 }
+
+// ClipboardStatus describes the last clipboard transfer, "" if there was none.
+func (c *Client) ClipboardStatus() string {
+	s, _ := c.clipNote.Load().(string)
+	return s
+}
+
+// ClipboardTransfers counts the clipboard transfers completed so far.
+func (c *Client) ClipboardTransfers() int64 { return c.clipCount.Load() }
 
 // Active reports whether the cursor is currently on this computer.
 func (c *Client) Active() bool { return c.active.Load() }

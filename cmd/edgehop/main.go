@@ -327,6 +327,7 @@ type clientStatus struct {
 	Connected bool   `json:"connected"`
 	Active    bool   `json:"active"`          // the cursor is on this computer
 	Error     string `json:"error,omitempty"` // why it is not connected
+	Clipboard string `json:"clipboard,omitempty"`
 }
 
 // screenOrder lists the layout's screens: the row first, then the rest.
@@ -447,7 +448,7 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	if child {
 		go reportStatus(ctx, func() any {
 			return clientStatus{Role: "client", Name: cfg.Name, Server: cfg.Server,
-				Connected: c.Connected(), Active: c.Active(), Error: c.LastError()}
+				Connected: c.Connected(), Active: c.Active(), Error: c.LastError(), Clipboard: c.ClipboardStatus()}
 		})
 	}
 	return c.Run(ctx)

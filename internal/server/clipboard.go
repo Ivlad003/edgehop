@@ -30,8 +30,10 @@ type clipHub struct {
 	ver       map[string]uint64 // version each screen holds
 	localMark string            // the server's clipboard mark at its last sync
 	nextID    uint32
-	routes    map[uint32]route // bundles in flight from clients
+	routes    map[uint32]route  // bundles in flight from clients
+	dest      map[string]string // where the cursor went when it last left each client
 	last      string
+	count     int64 // completed transfers
 
 	recvMu sync.Mutex
 	recv   xfer.Receiver // bundles addressed to the server itself
@@ -49,6 +51,7 @@ func newClipHub(s *Server) *clipHub {
 		local:  s.cfg.Clipboard,
 		ver:    map[string]uint64{},
 		routes: map[uint32]route{},
+		dest:   map[string]string{},
 		recv:   xfer.Receiver{Dir: s.cfg.ClipDir, Limit: s.cfg.ClipLimit},
 	}
 }
@@ -63,18 +66,26 @@ func (h *clipHub) note(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	h.mu.Lock()
 	h.last = msg
+	h.count++
 	h.mu.Unlock()
 	logx.Infof("clipboard: %s", msg)
 }
 
-// switched is called by the run loop when the cursor moved. It must not
-// block: reading a clipboard or sending files can take a while.
-func (h *clipHub) switched(from, to string) {
+// moved is called by the run loop when the cursor moves from one screen to
+// another. It must not block: reading a clipboard or sending files can take
+// a while.
+//
+// When the cursor leaves a client, moved must be called before that client
+// is told (TLeave): the client answers with TClipState at once, and by then
+// the hub has to know where the cursor went.
+func (h *clipHub) moved(from, to string) {
 	if from == h.s.cfg.Name {
 		go h.fromServer(to)
+		return
 	}
-	// A client reports about its own clipboard with TClipState, in reply to
-	// the TLeave it was just sent; see clientState.
+	h.mu.Lock()
+	h.dest[from] = to
+	h.mu.Unlock()
 }
 
 // fromServer runs when the cursor left the server's own desktop.
@@ -142,11 +153,11 @@ func (h *clipHub) setVersion(name string, version uint64) {
 // whether its clipboard changed while the cursor was there.
 func (h *clipHub) clientState(sess *session, changed bool) {
 	self := h.s.cfg.Name
-	cur := h.s.Focus()
+	h.mu.Lock()
+	cur := h.dest[sess.name]
 	if cur == "" {
 		cur = self
 	}
-	h.mu.Lock()
 	if changed {
 		h.global++
 		h.ver[sess.name] = h.global

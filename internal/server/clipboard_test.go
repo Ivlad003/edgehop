@@ -41,6 +41,25 @@ func (r *clipRig) join(name string) (*fakeInjector, *clip.Memory, string) {
 	return inj, mem, dir
 }
 
+// arrivesOn runs act (which moves the cursor) and waits until a clipboard
+// transfer has been completely applied on the named client and ok holds.
+// "Completely" matters: only then may the test copy something new there.
+func (r *clipRig) arrivesOn(name, what string, act func(), ok func() bool) {
+	r.t.Helper()
+	c := r.clients[name]
+	before := c.ClipboardTransfers()
+	act()
+	eventually(r.t, what, func() bool { return c.ClipboardTransfers() > before && ok() })
+}
+
+// arrivesOnServer is arrivesOn for the server's own clipboard.
+func (r *clipRig) arrivesOnServer(what string, act func(), ok func() bool) {
+	r.t.Helper()
+	before := r.srv.ClipboardTransfers()
+	act()
+	eventually(r.t, what, func() bool { return r.srv.ClipboardTransfers() > before && ok() })
+}
+
 func text(m *clip.Memory) string {
 	c, _ := m.Read()
 	if c.Kind != clip.Text {
@@ -57,32 +76,40 @@ func mark(m *clip.Memory) string {
 func TestClipboardTextFollowsTheCursor(t *testing.T) {
 	r := startClipServer(t, []string{"desk", "mac"}, 0)
 	mac, macClip, _ := r.join("mac")
+	toMac := func() {
+		r.cap.edge(layout.Right, 0.5)
+		r.waitFocus("mac")
+	}
+	toDesk := func() {
+		r.cap.move(-10, 0)
+		r.waitFocus("")
+	}
 
 	// Copy on the server, move to the client: it is there to paste.
 	r.clip.WriteText("скопійовано на сервері")
-	r.cap.edge(layout.Right, 0.5)
-	r.waitFocus("mac")
+	r.arrivesOn("mac", "the server's text on the client", toMac,
+		func() bool { return text(macClip) == "скопійовано на сервері" })
 	waitPos(t, mac, 2, 250)
-	eventually(t, "the server's text on the client", func() bool { return text(macClip) == "скопійовано на сервері" })
 
 	// Copy on the client, move back: it is on the server.
 	macClip.WriteText("copied on the mac")
-	r.cap.move(-10, 0)
-	r.waitFocus("")
-	eventually(t, "the client's text on the server", func() bool { return text(r.clip) == "copied on the mac" })
+	r.arrivesOnServer("the client's text on the server", toDesk,
+		func() bool { return text(r.clip) == "copied on the mac" })
 	if !strings.Contains(r.srv.ClipboardStatus(), "mac -> desk") {
 		t.Errorf("status = %q", r.srv.ClipboardStatus())
 	}
 
 	// Nothing new was copied: moving back and forth must not rewrite anything.
 	before := mark(macClip) + "/" + mark(r.clip)
-	r.cap.edge(layout.Right, 0.5)
-	r.waitFocus("mac")
-	r.cap.move(-10, 0)
-	r.waitFocus("")
+	transfers := r.srv.ClipboardTransfers() + r.clients["mac"].ClipboardTransfers()
+	toMac()
+	toDesk()
 	time.Sleep(150 * time.Millisecond)
 	if after := mark(macClip) + "/" + mark(r.clip); after != before {
 		t.Errorf("clipboards were rewritten without a new copy: %s -> %s", before, after)
+	}
+	if now := r.srv.ClipboardTransfers() + r.clients["mac"].ClipboardTransfers(); now != transfers {
+		t.Errorf("%d transfer(s) happened without a new copy", now-transfers)
 	}
 }
 
@@ -98,10 +125,11 @@ func TestClipboardFilesAreTransferred(t *testing.T) {
 
 	// Files copied on the server arrive on the client as files.
 	r.clip.WriteFiles([]string{filepath.Join(src, "звіт.txt"), filepath.Join(src, "photos")})
-	r.cap.edge(layout.Right, 0.5)
-	r.waitFocus("mac")
 	var got clip.Content
-	eventually(t, "the files on the client", func() bool {
+	r.arrivesOn("mac", "the files on the client", func() {
+		r.cap.edge(layout.Right, 0.5)
+		r.waitFocus("mac")
+	}, func() bool {
 		got, _ = macClip.Read()
 		return got.Kind == clip.Files && len(got.Files) == 2
 	})
@@ -121,9 +149,10 @@ func TestClipboardFilesAreTransferred(t *testing.T) {
 	other := filepath.Join(t.TempDir(), "from-mac.txt")
 	os.WriteFile(other, []byte("made on the mac"), 0o644)
 	macClip.WriteFiles([]string{other})
-	r.cap.move(-10, 0)
-	r.waitFocus("")
-	eventually(t, "the client's file on the server", func() bool {
+	r.arrivesOnServer("the client's file on the server", func() {
+		r.cap.move(-10, 0)
+		r.waitFocus("")
+	}, func() bool {
 		c, _ := r.clip.Read()
 		if c.Kind != clip.Files || len(c.Files) != 1 || !strings.HasPrefix(c.Files[0], r.dir) {
 			return false
@@ -143,27 +172,31 @@ func TestClipboardReachesEveryScreen(t *testing.T) {
 	r.waitFocus("a")
 	waitPos(t, a, 2, 0)
 	aClip.WriteText("from a")
-	r.cap.move(2000, 0)
-	r.waitFocus("b")
+	r.arrivesOn("b", "a's text on b", func() {
+		r.cap.move(2000, 0)
+		r.waitFocus("b")
+	}, func() bool { return text(bClip) == "from a" })
 	waitPos(t, b, 2, 0)
-	eventually(t, "a's text on b", func() bool { return text(bClip) == "from a" })
 
 	// Walk back to the server without copying anything new: the same text
 	// must arrive there too, although it was copied two screens away.
 	r.cap.move(-10, 0)
 	r.waitFocus("a")
-	r.cap.move(-2000, 0)
-	r.waitFocus("")
-	eventually(t, "a's text on the server", func() bool { return text(r.clip) == "from a" })
+	r.arrivesOnServer("a's text on the server", func() {
+		r.cap.move(-2000, 0)
+		r.waitFocus("")
+	}, func() bool { return text(r.clip) == "from a" })
 
 	// A later copy on the server replaces it everywhere the cursor goes.
 	r.clip.WriteText("newer")
-	r.cap.edge(layout.Right, 0)
-	r.waitFocus("a")
-	eventually(t, "the newer text on a", func() bool { return text(aClip) == "newer" })
-	r.cap.move(2000, 0)
-	r.waitFocus("b")
-	eventually(t, "the newer text on b", func() bool { return text(bClip) == "newer" })
+	r.arrivesOn("a", "the newer text on a", func() {
+		r.cap.edge(layout.Right, 0)
+		r.waitFocus("a")
+	}, func() bool { return text(aClip) == "newer" })
+	r.arrivesOn("b", "the newer text on b", func() {
+		r.cap.move(2000, 0)
+		r.waitFocus("b")
+	}, func() bool { return text(bClip) == "newer" })
 }
 
 func TestClipboardSizeLimit(t *testing.T) {
@@ -183,9 +216,10 @@ func TestClipboardSizeLimit(t *testing.T) {
 	r.cap.move(-10, 0)
 	r.waitFocus("")
 	r.clip.WriteText("small")
-	r.cap.edge(layout.Right, 0.5)
-	r.waitFocus("mac")
-	eventually(t, "the small text on the client", func() bool { return text(macClip) == "small" })
+	r.arrivesOn("mac", "the small text on the client", func() {
+		r.cap.edge(layout.Right, 0.5)
+		r.waitFocus("mac")
+	}, func() bool { return text(macClip) == "small" })
 }
 
 // A client without a clipboard (or an older version) simply does not take
