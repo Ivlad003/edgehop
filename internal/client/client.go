@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Ivlad003/edgehop/internal/clip"
 	"github.com/Ivlad003/edgehop/internal/input"
 	"github.com/Ivlad003/edgehop/internal/logx"
 	"github.com/Ivlad003/edgehop/internal/proto"
@@ -33,6 +34,13 @@ type Config struct {
 	Name   string
 	Server string // host:port
 	Key    string
+
+	// Clipboard, when set, is shared with the server: text and copied files
+	// follow the cursor. ClipDir is where received files are kept; ClipLimit
+	// is the largest content accepted, in bytes (0 = any).
+	Clipboard clip.Clipboard
+	ClipDir   string
+	ClipLimit int64
 }
 
 // Client is a connection to a server that reconnects forever.
@@ -147,7 +155,11 @@ func (c *Client) session(ctx context.Context) error {
 		return fmt.Errorf("server %s: %w", c.cfg.Server, err)
 	}
 	w, h := c.inj.Size()
-	if err := ch.Send(proto.AppendHello(nil, c.cfg.Name, runtime.GOOS, w, h)); err != nil {
+	var caps uint32
+	if c.cfg.Clipboard != nil {
+		caps |= proto.CapClipboard
+	}
+	if err := ch.Send(proto.AppendHello(nil, c.cfg.Name, runtime.GOOS, w, h, caps)); err != nil {
 		return err
 	}
 	conn.SetReadDeadline(time.Now().Add(secure.HandshakeTimeout))
@@ -175,6 +187,13 @@ func (c *Client) session(ctx context.Context) error {
 	}()
 
 	st := &state{inj: c.inj}
+	clips := c.openClipboard(ctx, ch, welcome)
+	if clips != nil {
+		defer clips.close()
+		wg.Add(1)
+		go func() { defer wg.Done(); clips.receive() }()
+		logx.Infof("clipboard: shared (%s)", c.cfg.Clipboard.Describe())
+	}
 	if udp, err := c.openUDP(conn); err != nil {
 		logx.Debugf("UDP unavailable, cursor motion will use TCP: %v", err)
 	} else {
@@ -233,6 +252,13 @@ func (c *Client) session(ctx context.Context) error {
 			st.mu.Unlock()
 			c.active.Store(false)
 			logx.Debugf("cursor left")
+			if clips != nil {
+				go clips.cursorLeft()
+			}
+		case proto.TClipSend:
+			if clips != nil {
+				go clips.send(m.Bundle)
+			}
 		case proto.TButton:
 			st.mu.Lock()
 			if st.active {

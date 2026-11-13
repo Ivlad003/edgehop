@@ -347,6 +347,7 @@ func (s *Server) state() state {
 		st.Config = config.Form{
 			Name: name, Port: config.DefaultPort, Row: []string{name},
 			ReleaseHotkey: config.DefaultHotkey, HideCursor: true,
+			Clipboard: true, ClipboardMaxMB: config.DefaultClipboardMaxMB,
 			Screens: map[string]config.FormScreen{},
 		}
 	}

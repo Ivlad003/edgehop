@@ -21,6 +21,9 @@ import (
 // DefaultPort is used when no port is given.
 const DefaultPort = 24920
 
+// DefaultClipboardMaxMB is the largest clipboard content transferred.
+const DefaultClipboardMaxMB = 200
+
 // DefaultHotkey forces the cursor back to the server.
 const DefaultHotkey = "ctrl+alt+shift+backspace"
 
@@ -42,6 +45,11 @@ type Config struct {
 
 	// Client only.
 	Server string `toml:"server,omitempty"`
+
+	// Both: share the clipboard (text and copied files) with the other
+	// computers. On by default; content above the limit is not transferred.
+	Clipboard      *bool `toml:"clipboard"`
+	ClipboardMaxMB int   `toml:"clipboard_max_mb,omitzero"`
 
 	// Both: override the detected desktop size, "1920x1080".
 	ScreenSize string `toml:"screen_size,omitempty"`
@@ -243,6 +251,18 @@ func (c *Config) Hotkey() (keys.Hotkey, error) {
 	return keys.ParseHotkey(s)
 }
 
+// ClipboardEnabled reports whether the clipboard is shared (default true).
+func (c *Config) ClipboardEnabled() bool { return c.Clipboard == nil || *c.Clipboard }
+
+// ClipboardLimit returns the largest clipboard content to transfer, in bytes.
+func (c *Config) ClipboardLimit() int64 {
+	mb := c.ClipboardMaxMB
+	if mb <= 0 {
+		mb = DefaultClipboardMaxMB
+	}
+	return int64(mb) << 20
+}
+
 // HideCursorEnabled reports whether the server should hide its cursor while
 // controlling another computer (default true).
 func (c *Config) HideCursorEnabled() bool { return c.HideCursor == nil || *c.HideCursor }
@@ -359,18 +379,20 @@ func Write(path, text string, force bool) error {
 
 // Form is the part of the configuration the web interface edits.
 type Form struct {
-	Role          string                `json:"role"`
-	Name          string                `json:"name"`
-	Key           string                `json:"key"`
-	Port          int                   `json:"port"`
-	Row           []string              `json:"row"`   // screens from left to right
-	Above         string                `json:"above"` // the screen above this computer, if any
-	Below         string                `json:"below"` // the screen below this computer, if any
-	Server        string                `json:"server"`
-	ReleaseHotkey string                `json:"releaseHotkey"`
-	HideCursor    bool                  `json:"hideCursor"`
-	ScreenSize    string                `json:"screenSize"`
-	Screens       map[string]FormScreen `json:"screens"`
+	Role           string                `json:"role"`
+	Name           string                `json:"name"`
+	Key            string                `json:"key"`
+	Port           int                   `json:"port"`
+	Row            []string              `json:"row"`   // screens from left to right
+	Above          string                `json:"above"` // the screen above this computer, if any
+	Below          string                `json:"below"` // the screen below this computer, if any
+	Server         string                `json:"server"`
+	ReleaseHotkey  string                `json:"releaseHotkey"`
+	HideCursor     bool                  `json:"hideCursor"`
+	ScreenSize     string                `json:"screenSize"`
+	Clipboard      bool                  `json:"clipboard"`
+	ClipboardMaxMB int                   `json:"clipboardMaxMB"`
+	Screens        map[string]FormScreen `json:"screens"`
 }
 
 // FormScreen holds the per-screen options shown in the web interface.
@@ -397,13 +419,15 @@ func (c *Config) Port() int {
 func (c *Config) Form() Form {
 	f := Form{
 		Role: c.Role, Name: c.Name, Key: c.Key,
-		Port:          c.Port(),
-		Row:           append([]string{}, c.Row...),
-		Server:        c.Server,
-		ReleaseHotkey: DefaultHotkey,
-		HideCursor:    c.HideCursorEnabled(),
-		ScreenSize:    c.ScreenSize,
-		Screens:       map[string]FormScreen{},
+		Port:           c.Port(),
+		Row:            append([]string{}, c.Row...),
+		Server:         c.Server,
+		ReleaseHotkey:  DefaultHotkey,
+		HideCursor:     c.HideCursorEnabled(),
+		ScreenSize:     c.ScreenSize,
+		Clipboard:      c.ClipboardEnabled(),
+		ClipboardMaxMB: int(c.ClipboardLimit() >> 20),
+		Screens:        map[string]FormScreen{},
 	}
 	if c.ReleaseHotkey != nil {
 		f.ReleaseHotkey = *c.ReleaseHotkey
@@ -429,6 +453,12 @@ func (c *Config) Apply(f Form) {
 	c.Name = strings.TrimSpace(f.Name)
 	c.Key = strings.TrimSpace(f.Key)
 	c.ScreenSize = strings.TrimSpace(f.ScreenSize)
+	share := f.Clipboard
+	c.Clipboard = &share
+	c.ClipboardMaxMB = f.ClipboardMaxMB
+	if c.ClipboardMaxMB == DefaultClipboardMaxMB || c.ClipboardMaxMB < 0 {
+		c.ClipboardMaxMB = 0 // the default; leave it out of the file
+	}
 	if c.Role == "client" {
 		c.Server = strings.TrimSpace(f.Server)
 		return

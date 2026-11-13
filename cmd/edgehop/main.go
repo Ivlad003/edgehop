@@ -14,12 +14,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Ivlad003/edgehop/internal/client"
+	"github.com/Ivlad003/edgehop/internal/clip"
 	"github.com/Ivlad003/edgehop/internal/config"
 	"github.com/Ivlad003/edgehop/internal/input"
 	"github.com/Ivlad003/edgehop/internal/keys"
@@ -253,6 +255,29 @@ func cmdRun(args []string) error {
 	return runClient(ctx, cfg, opts, *noInput, *child)
 }
 
+// openClipboard returns the system clipboard to share, or nil when sharing
+// is switched off or this computer offers no way to reach the clipboard.
+func openClipboard(cfg *config.Config, noInput bool) (clip.Clipboard, string) {
+	if noInput || !cfg.ClipboardEnabled() {
+		return nil, ""
+	}
+	cb, err := clip.New()
+	if err != nil {
+		if errors.Is(err, clip.ErrUnavailable) {
+			logx.Warnf("clipboard sharing is off: install xclip (X11) or wl-clipboard (Wayland) to enable it")
+		} else {
+			logx.Warnf("clipboard sharing is off: %v", err)
+		}
+		return nil, ""
+	}
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	logx.Infof("clipboard: shared, text and files up to %d MB (%s)", cfg.ClipboardLimit()>>20, cb.Describe())
+	return cb, filepath.Join(dir, "edgehop", "clipboard")
+}
+
 // reportStatus prints the status as one JSON line whenever it changes.
 func reportStatus(ctx context.Context, get func() any) {
 	last := ""
@@ -291,6 +316,8 @@ type serverStatus struct {
 	Screens []screenStatus `json:"screens"`
 	// Pending are computers that have the right key but are not in the layout.
 	Pending []server.UnknownClient `json:"pending"`
+	// Clipboard describes the last clipboard transfer, if any.
+	Clipboard string `json:"clipboard,omitempty"`
 }
 
 type clientStatus struct {
@@ -341,9 +368,11 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	}
 	defer capture.Close()
 
+	cb, clipDir := openClipboard(cfg, noInput)
 	srv := server.New(server.Config{
 		Name: cfg.Name, Listen: cfg.Listen, Key: cfg.Key,
 		Layout: lay, Screens: screens, Hotkey: hotkey, AutoScale: true,
+		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
 	}, capture)
 	if err := srv.Listen(); err != nil {
 		return err
@@ -363,7 +392,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	}
 	if child {
 		go reportStatus(ctx, func() any {
-			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus(), Pending: srv.Unknown()}
+			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus(), Pending: srv.Unknown(), Clipboard: srv.ClipboardStatus()}
 			if hotkey.Key != 0 {
 				st.Hotkey = hotkeyText(cfg)
 			}
@@ -410,7 +439,11 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	w, h := inj.Size()
 	logx.Infof("client %q, desktop %dx%d, server %s", cfg.Name, w, h, cfg.Server)
 	logx.Infof("input: %s", inj.Describe())
-	c := client.New(client.Config{Name: cfg.Name, Server: cfg.Server, Key: cfg.Key}, inj)
+	cb, clipDir := openClipboard(cfg, noInput)
+	c := client.New(client.Config{
+		Name: cfg.Name, Server: cfg.Server, Key: cfg.Key,
+		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
+	}, inj)
 	if child {
 		go reportStatus(ctx, func() any {
 			return clientStatus{Role: "client", Name: cfg.Name, Server: cfg.Server,

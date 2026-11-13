@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Ivlad003/edgehop/internal/clip"
 	"github.com/Ivlad003/edgehop/internal/input"
 	"github.com/Ivlad003/edgehop/internal/keys"
 	"github.com/Ivlad003/edgehop/internal/layout"
@@ -60,6 +61,13 @@ type Config struct {
 	// pixels would otherwise need proportionally more hand movement. The
 	// per-screen Scale option multiplies the automatic factor.
 	AutoScale bool
+
+	// Clipboard, when set, is shared with the clients: text and copied files
+	// follow the cursor. ClipDir is where files received by this computer are
+	// kept; ClipLimit is the largest content accepted, in bytes (0 = any).
+	Clipboard clip.Clipboard
+	ClipDir   string
+	ClipLimit int64
 }
 
 // autoScale returns how much faster the cursor should move on a client whose
@@ -88,6 +96,10 @@ type session struct {
 	pong    atomic.Int64 // unix nanoseconds of the last pong
 	rtt     atomic.Int64 // nanoseconds
 	closed  atomic.Bool
+
+	caps   uint32
+	data   atomic.Pointer[secure.Channel] // the data connection, once the client opened it
+	dataMu sync.Mutex                     // one bundle at a time towards this client
 
 	// Scratch buffers, used only by the run loop.
 	buf []byte
@@ -148,6 +160,7 @@ type Server struct {
 	held    map[uint16]uint16 // physical key -> key sent to the focused screen
 
 	focusName atomic.Value // string, for Focus()
+	clip      *clipHub     // nil when the clipboard is not shared
 }
 
 // New creates a server. Call Listen, then Serve.
@@ -164,6 +177,9 @@ func New(cfg Config, capture input.Capture) *Server {
 		held:    map[uint16]uint16{},
 	}
 	s.focusName.Store("")
+	if cfg.Clipboard != nil {
+		s.clip = newClipHub(s)
+	}
 	return s
 }
 
@@ -396,6 +412,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 	hello, err := proto.Decode(raw)
+	if err == nil && hello.Type == proto.TDataHello {
+		conn.SetReadDeadline(time.Time{})
+		s.handleData(ch, hello.Session)
+		return
+	}
 	if err != nil || hello.Type != proto.THello {
 		conn.Close()
 		return
@@ -430,6 +451,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		w:      int(hello.W),
 		h:      int(hello.H),
 		scale:  1,
+		caps:   hello.Caps,
 		ch:     ch,
 		buf:    make([]byte, 0, 256),
 		dg:     make([]byte, 0, 256),
@@ -451,6 +473,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.idMu.Unlock()
 	defer func() {
 		sess.close()
+		if d := sess.data.Load(); d != nil {
+			d.Close()
+		}
 		s.idMu.Lock()
 		delete(s.byID, sess.id)
 		s.idMu.Unlock()
@@ -460,7 +485,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}()
 
-	if err := ch.Send(proto.AppendWelcome(nil, sess.id, s.cfg.Name)); err != nil {
+	var caps uint32
+	if s.clip != nil {
+		caps |= proto.CapClipboard
+	}
+	if err := ch.Send(proto.AppendWelcome(nil, sess.id, s.cfg.Name, caps)); err != nil {
 		return
 	}
 	select {
@@ -483,10 +512,15 @@ func (s *Server) handleConn(conn net.Conn) {
 			logx.Debugf("%s: %v", sess.name, err)
 			return
 		}
-		if m.Type == proto.TPong {
+		switch m.Type {
+		case proto.TPong:
 			now := time.Now().UnixNano()
 			sess.pong.Store(now)
 			sess.rtt.Store(now - int64(m.T))
+		case proto.TClipState:
+			if s.clip != nil {
+				s.clip.clientState(sess, m.Changed)
+			}
 		}
 	}
 }
@@ -700,6 +734,7 @@ func (s *Server) key(code uint16, state uint8) {
 	if !isHeld {
 		if s.cfg.Hotkey.Match(code, func(c uint16) bool { _, ok := s.held[c]; return ok }) {
 			logx.Infof("release hotkey: back to %s", s.cfg.Name)
+			s.clipSwitched(sess.name, s.cfg.Name)
 			s.leaveRemote()
 			s.setFocus(nil)
 			s.cap.Release(0, 0, false)
@@ -725,6 +760,7 @@ func (s *Server) leaveLocal(side layout.Side, frac float64) {
 	}
 	s.cap.Grab()
 	s.enter(sess, side.Opposite(), frac)
+	s.clipSwitched(s.cfg.Name, sess.name)
 	logx.Debugf("cursor: %s -> %s", s.cfg.Name, sess.name)
 }
 
@@ -810,11 +846,13 @@ func (s *Server) cross(sess *session, side layout.Side, nx, ny float64) bool {
 	if target == s.cfg.Name {
 		s.setFocus(nil)
 		s.cap.Release(side.Opposite(), frac, true)
+		s.clipSwitched(sess.name, s.cfg.Name)
 		logx.Debugf("cursor: %s -> %s", sess.name, s.cfg.Name)
 		return true
 	}
 	next := s.byName[target]
 	s.enter(next, side.Opposite(), frac)
+	s.clipSwitched(sess.name, next.name)
 	logx.Debugf("cursor: %s -> %s", sess.name, next.name)
 	return true
 }
@@ -846,4 +884,58 @@ func (s *Server) settle() {
 	}
 	s.settled = s.mseq
 	sess.send(proto.AppendMotion(sess.buf[:0], s.mseq, s.sentX, s.sentY))
+}
+
+// clipSwitched tells the clipboard hub that the cursor moved between screens.
+func (s *Server) clipSwitched(from, to string) {
+	if s.clip != nil {
+		s.clip.switched(from, to)
+	}
+}
+
+// sessionNamed finds a connected client by name. Unlike byName it may be
+// called from any goroutine.
+func (s *Server) sessionNamed(name string) *session {
+	s.idMu.RLock()
+	defer s.idMu.RUnlock()
+	for _, sess := range s.byID {
+		if sess.name == name {
+			return sess
+		}
+	}
+	return nil
+}
+
+// ClipboardStatus describes the last clipboard transfer, "" if there was none.
+func (s *Server) ClipboardStatus() string {
+	if s.clip == nil {
+		return ""
+	}
+	return s.clip.status()
+}
+
+// handleData serves a client's data connection: the channel that carries
+// clipboard content, kept apart from the input channel so that a large file
+// never delays a key press.
+func (s *Server) handleData(ch *secure.Channel, sessionID uint32) {
+	defer ch.Close()
+	s.idMu.RLock()
+	sess := s.byID[sessionID]
+	s.idMu.RUnlock()
+	if sess == nil || s.clip == nil || sess.caps&proto.CapClipboard == 0 {
+		return
+	}
+	if old := sess.data.Swap(ch); old != nil {
+		old.Close()
+	}
+	defer sess.data.CompareAndSwap(ch, nil)
+	logx.Debugf("%s: data connection open", sess.name)
+	for {
+		frame, err := ch.Recv()
+		if err != nil {
+			s.clip.senderGone(sess)
+			return
+		}
+		s.clip.fromClient(sess, frame)
+	}
 }

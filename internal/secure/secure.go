@@ -44,7 +44,7 @@ const (
 	magic        = "EHOP"
 	wireVersion  = 1
 	helloLen     = len(magic) + 1 + 32
-	maxFrame     = 8 * 1024
+	maxFrame     = 60000 // fits in the 16-bit length; data frames carry 32 KB
 	dgHeaderLen  = 12
 	nonceTCP     = 0
 	nonceUDP     = 1

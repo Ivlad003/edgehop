@@ -1,11 +1,13 @@
-# Exercises the real input layer of the operating system: capturing and
-# injecting mouse and keyboard events, not just compiling the code.
+# Exercises the real operating system rather than just compiling the code:
+# capturing and injecting mouse and keyboard events, and the clipboard.
 #
-#   Linux  - through the kernel: virtual devices via /dev/uinput, read back
-#            from /dev/input (no desktop needed, runs as root)
-#   macOS  - through the window server: posted events and an event tap
-#
-# Windows is checked on a real desktop with `edgehop selftest --grab`.
+#   Linux    input through the kernel: virtual devices via /dev/uinput, read
+#            back from /dev/input (no desktop needed, runs as root);
+#            clipboard through xclip on a virtual X display
+#   macOS    input through the window server (posted events and an event
+#            tap); clipboard through NSPasteboard
+#   Windows  clipboard through the Win32 API (input is checked on a real
+#            desktop with `edgehop selftest --grab`)
 name: live-input
 
 on:
@@ -14,6 +16,7 @@ on:
       - 'internal/input/**'
       - 'internal/keys/**'
       - 'internal/layout/**'
+      - 'internal/clip/**'
       - '.github/workflows/live-input.yml'
   workflow_dispatch:
 
@@ -39,6 +42,12 @@ jobs:
           sudo EDGEHOP_LIVE=1 ./live.test -test.run Live -test.v -test.timeout 180s 2>&1 | tee live.log
           # A skipped live test would mean nothing was verified.
           if grep -q -- '--- SKIP' live.log; then echo "::error::the live input tests were skipped"; exit 1; fi
+      - name: Clipboard through xclip
+        shell: bash
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq xclip xvfb
+          EDGEHOP_LIVE=1 xvfb-run -a go test ./internal/clip/ -run Live -v -timeout 120s 2>&1 | tee clip.log
+          if grep -q -- '--- SKIP' clip.log; then echo "::error::the clipboard test was skipped"; exit 1; fi
 
   macos:
     runs-on: macos-latest
@@ -52,3 +61,21 @@ jobs:
         run: |
           EDGEHOP_LIVE=1 go test ./internal/input/ -run Live -v -timeout 180s 2>&1 | tee live.log
           if grep -q -- '--- SKIP' live.log; then echo "::error::the live input tests were skipped"; exit 1; fi
+      - name: Clipboard through NSPasteboard
+        shell: bash
+        run: |
+          EDGEHOP_LIVE=1 go test ./internal/clip/ -run Live -v -timeout 120s 2>&1 | tee clip.log
+          if grep -q -- '--- SKIP' clip.log; then echo "::error::the clipboard test was skipped"; exit 1; fi
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Clipboard through the Win32 API
+        shell: bash
+        run: |
+          EDGEHOP_LIVE=1 go test ./internal/clip/ -run Live -v -timeout 120s 2>&1 | tee clip.log
+          if grep -q -- '--- SKIP' clip.log; then echo "::error::the clipboard test was skipped"; exit 1; fi

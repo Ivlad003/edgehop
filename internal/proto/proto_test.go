@@ -13,10 +13,21 @@ func TestRoundTrip(t *testing.T) {
 			t.Fatalf("%s:\n got %+v\nwant %+v", name, got, want)
 		}
 	}
-	check("hello", AppendHello(nil, "macbook", "darwin", 1728, 1117),
+	check("hello", AppendHello(nil, "macbook", "darwin", 1728, 1117, CapClipboard),
+		Msg{Type: THello, Version: Version, W: 1728, H: 1117, OS: "darwin", Name: "macbook", Caps: CapClipboard})
+	check("welcome", AppendWelcome(nil, 0xDEADBEEF, "desktop", CapClipboard),
+		Msg{Type: TWelcome, Session: 0xDEADBEEF, Name: "desktop", Caps: CapClipboard})
+	check("datahello", AppendDataHello(nil, 77), Msg{Type: TDataHello, Session: 77})
+	check("clipstate", AppendClipState(nil, true), Msg{Type: TClipState, Changed: true})
+	check("clipsend", AppendClipSend(nil, 9), Msg{Type: TClipSend, Bundle: 9})
+
+	// Messages from a version without capabilities end before the last field.
+	oldHello := AppendHello(nil, "macbook", "darwin", 1728, 1117, CapClipboard)
+	check("hello from an older version", oldHello[:len(oldHello)-4],
 		Msg{Type: THello, Version: Version, W: 1728, H: 1117, OS: "darwin", Name: "macbook"})
-	check("welcome", AppendWelcome(nil, 0xDEADBEEF, "desktop"),
-		Msg{Type: TWelcome, Session: 0xDEADBEEF, Name: "desktop"})
+	oldWelcome := AppendWelcome(nil, 5, "desktop", CapClipboard)
+	check("welcome from an older version", oldWelcome[:len(oldWelcome)-4],
+		Msg{Type: TWelcome, Session: 5, Name: "desktop"})
 	check("reject", AppendReject(nil, "unknown screen"),
 		Msg{Type: TReject, Reason: "unknown screen"})
 	check("enter", AppendEnter(nil, 7, 2, 540), Msg{Type: TEnter, Seq: 7, X: 2, Y: 540})

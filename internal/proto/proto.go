@@ -17,18 +17,27 @@ const Version = 1
 
 // Message types.
 const (
-	THello    = 1  // client -> server: version, screen size, os, name
-	TWelcome  = 2  // server -> client: session id, server name
-	TReject   = 3  // server -> client: reason
-	TEnter    = 4  // server -> client: the cursor enters this screen at x,y
-	TLeave    = 5  // server -> client: the cursor left this screen
-	TMotion   = 6  // server -> client: absolute cursor position (TCP or UDP)
-	TButton   = 7  // server -> client: mouse button, with the cursor position
-	TWheel    = 8  // server -> client: scroll, in 1/120 of a notch
-	TKey      = 9  // server -> client: key up / down / repeat
-	TPing     = 10 // server -> client
-	TPong     = 11 // client -> server
-	TUDPHello = 12 // client -> server over UDP: "this is my UDP address"
+	THello     = 1  // client -> server: version, screen size, os, name
+	TWelcome   = 2  // server -> client: session id, server name
+	TReject    = 3  // server -> client: reason
+	TEnter     = 4  // server -> client: the cursor enters this screen at x,y
+	TLeave     = 5  // server -> client: the cursor left this screen
+	TMotion    = 6  // server -> client: absolute cursor position (TCP or UDP)
+	TButton    = 7  // server -> client: mouse button, with the cursor position
+	TWheel     = 8  // server -> client: scroll, in 1/120 of a notch
+	TKey       = 9  // server -> client: key up / down / repeat
+	TPing      = 10 // server -> client
+	TPong      = 11 // client -> server
+	TUDPHello  = 12 // client -> server over UDP: "this is my UDP address"
+	TDataHello = 13 // client -> server, first frame of a data connection: session id
+	TClipState = 14 // client -> server, after the cursor left: did its clipboard change?
+	TClipSend  = 15 // server -> client: send your clipboard as bundle N on the data connection
+)
+
+// Capabilities, exchanged in Hello and Welcome. A side only uses a feature
+// the other side announced, so different versions keep working together.
+const (
+	CapClipboard = 1 << 0 // shared clipboard over a separate data connection
 )
 
 // Msg is a decoded message. Only the fields of its Type are meaningful.
@@ -48,6 +57,9 @@ type Msg struct {
 	Name    string
 	OS      string
 	Reason  string
+	Caps    uint32
+	Bundle  uint32
+	Changed bool
 }
 
 var be = binary.BigEndian
@@ -60,18 +72,36 @@ func appendStr(b []byte, s string) []byte {
 	return append(b, s...)
 }
 
-func AppendHello(b []byte, name, os string, w, h int) []byte {
+func AppendHello(b []byte, name, os string, w, h int, caps uint32) []byte {
 	b = append(b, THello, Version)
 	b = be.AppendUint32(b, uint32(w))
 	b = be.AppendUint32(b, uint32(h))
 	b = appendStr(b, os)
-	return appendStr(b, name)
+	b = appendStr(b, name)
+	return be.AppendUint32(b, caps) // older versions stop reading before this
 }
 
-func AppendWelcome(b []byte, session uint32, serverName string) []byte {
+func AppendWelcome(b []byte, session uint32, serverName string, caps uint32) []byte {
 	b = append(b, TWelcome)
 	b = be.AppendUint32(b, session)
-	return appendStr(b, serverName)
+	b = appendStr(b, serverName)
+	return be.AppendUint32(b, caps)
+}
+
+func AppendDataHello(b []byte, session uint32) []byte {
+	return be.AppendUint32(append(b, TDataHello), session)
+}
+
+func AppendClipState(b []byte, changed bool) []byte {
+	c := byte(0)
+	if changed {
+		c = 1
+	}
+	return append(b, TClipState, c)
+}
+
+func AppendClipSend(b []byte, bundle uint32) []byte {
+	return be.AppendUint32(append(b, TClipSend), bundle)
 }
 
 func AppendReject(b []byte, reason string) []byte {
@@ -194,9 +224,21 @@ func Decode(b []byte) (Msg, error) {
 		m.W, m.H = r.u32(), r.u32()
 		m.OS = r.str()
 		m.Name = r.str()
+		if r.err == nil && len(r.b) >= 4 { // absent in messages from older versions
+			m.Caps = r.u32()
+		}
 	case TWelcome:
 		m.Session = r.u32()
 		m.Name = r.str()
+		if r.err == nil && len(r.b) >= 4 {
+			m.Caps = r.u32()
+		}
+	case TDataHello:
+		m.Session = r.u32()
+	case TClipState:
+		m.Changed = r.u8() != 0
+	case TClipSend:
+		m.Bundle = r.u32()
 	case TReject:
 		m.Reason = r.str()
 	case TEnter, TMotion:

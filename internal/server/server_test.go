@@ -169,7 +169,7 @@ func startServer(t *testing.T, name string, row []string, screens map[string]ser
 	return startServerWith(t, name, row, screens, false)
 }
 
-func startServerWith(t *testing.T, name string, row []string, screens map[string]server.ScreenOpts, autoScale bool) *rig {
+func startServerWith(t *testing.T, name string, row []string, screens map[string]server.ScreenOpts, autoScale bool, opts ...func(*server.Config)) *rig {
 	t.Helper()
 	l := layout.New()
 	l.Add(name)
@@ -179,10 +179,14 @@ func startServerWith(t *testing.T, name string, row []string, screens map[string
 		t.Fatal(err)
 	}
 	fc := newFakeCapture()
-	srv := server.New(server.Config{
+	cfg := server.Config{
 		Name: name, Listen: "127.0.0.1:0", Key: "test-key",
 		Layout: l, Screens: screens, Hotkey: hk, AutoScale: autoScale,
-	}, fc)
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	srv := server.New(cfg, fc)
 	if err := srv.Listen(); err != nil {
 		t.Fatal(err)
 	}
@@ -199,8 +203,18 @@ func startServerWith(t *testing.T, name string, row []string, screens map[string
 // connect starts a client and waits until the server sees it (with UDP up).
 func (r *rig) connect(name string, w, h int) (*fakeInjector, context.CancelFunc) {
 	r.t.Helper()
+	return r.connectWith(name, w, h, nil)
+}
+
+// connectWith is connect with a hook to adjust the client configuration.
+func (r *rig) connectWith(name string, w, h int, adjust func(*client.Config)) (*fakeInjector, context.CancelFunc) {
+	r.t.Helper()
 	inj := &fakeInjector{w: w, h: h}
-	c := client.New(client.Config{Name: name, Server: r.srv.Addr().String(), Key: r.key}, inj)
+	cc := client.Config{Name: name, Server: r.srv.Addr().String(), Key: r.key}
+	if adjust != nil {
+		adjust(&cc)
+	}
+	c := client.New(cc, inj)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { c.Run(ctx); close(done) }()

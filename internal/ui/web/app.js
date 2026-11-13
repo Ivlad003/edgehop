@@ -55,6 +55,11 @@ const TEXT = {
     addScreen: 'Додати екран', addPlaceholder: 'ім\'я, напр. macbook',
     moveLeft: 'Посунути ліворуч', moveRight: 'Посунути праворуч', remove: 'Прибрати',
     screenOpts: 'Параметри екранів',
+    clipShare: "Спільний буфер обміну: скопійований текст і файли можна вставити на іншому комп'ютері",
+    clipTitle: "Буфер обміну: обмеження",
+    clipMax: "Найбільший розмір для передачі, МБ",
+    clipHint: "Більший вміст не передається. Зображення (наприклад знімки екрана) поки не передаються.",
+    clipLast: "Буфер обміну: {0}",
     speedHint: "Швидкість курсора підбирається автоматично під розмір кожного екрана. Число нижче множить її: 1 — як є, 1.5 — у півтора раза швидше.",
     speed: 'Швидкість курсора',
     swap: 'Поміняти Alt і Win/Cmd (PC-клавіатура ↔ Mac)',
@@ -139,6 +144,11 @@ const TEXT = {
     addScreen: 'Add screen', addPlaceholder: 'name, e.g. macbook',
     moveLeft: 'Move left', moveRight: 'Move right', remove: 'Remove',
     screenOpts: 'Screen options',
+    clipShare: "Shared clipboard: copied text and files can be pasted on the other computer",
+    clipTitle: "Clipboard: limits",
+    clipMax: "Largest size to transfer, MB",
+    clipHint: "Larger content is not transferred. Images (screenshots, for example) are not transferred yet.",
+    clipLast: "Clipboard: {0}",
     speedHint: "The cursor speed is matched to the size of each screen automatically. The number below multiplies it: 1 keeps it, 1.5 makes it one and a half times faster.",
     speed: 'Cursor speed',
     swap: 'Swap Alt and Win/Cmd (PC keyboard ↔ Mac)',
@@ -294,6 +304,8 @@ function renderForm() {
   $('f-size').value = form.screenSize || '';
   $('f-size').placeholder = S.desktopW && S.desktopH ? S.desktopW + 'x' + S.desktopH : '1920x1080';
   $('row-add').placeholder = t('addPlaceholder');
+  $('f-clip').checked = !!form.clipboard;
+  $('f-clipmax').value = form.clipboardMaxMB || 200;
   $('f-above').value = form.above || '';
   $('f-below').value = form.below || '';
   $('client-note').textContent = role === 'client' && selfName() ? t('clientNote', selfName()) : '';
@@ -404,6 +416,7 @@ async function save(start) {
   const cfg = clone(form);
   cfg.name = selfName();
   cfg.port = parseInt(cfg.port, 10) || S.defaultPort;
+  cfg.clipboardMaxMB = parseInt(cfg.clipboardMaxMB, 10) || 200;
   if (cfg.role === 'client') { cfg.row = []; cfg.screens = {}; }
   busy = true;
   setButtons();
@@ -539,6 +552,7 @@ function renderLive(force) {
     line.textContent = others.length === 0 ? t('noOthers') : where + ' ' + t('connectedCount', connected, others.length);
     for (const s of st.screens || []) screens.append(screenBox(s, st.focus || '', true));
     if (st.hotkey) hint.textContent = t('hotkeyNote', st.hotkey);
+    if (st.clipboard) hint.textContent += (hint.textContent ? ' ' : '') + t('clipLast', st.clipboard);
   } else {
     pill.textContent = t(st.connected ? 'pillRunning' : 'pillWaiting');
     pill.classList.add(st.connected ? 'on' : 'wait');
@@ -681,6 +695,8 @@ function init() {
   $('f-hotkey').addEventListener('input', () => { form.releaseHotkey = $('f-hotkey').value; });
   $('f-hide').addEventListener('change', () => { form.hideCursor = $('f-hide').checked; });
   $('f-size').addEventListener('input', () => { form.screenSize = $('f-size').value; });
+  $('f-clip').addEventListener('change', () => { form.clipboard = $('f-clip').checked; });
+  $('f-clipmax').addEventListener('input', () => { form.clipboardMaxMB = parseInt($('f-clipmax').value, 10) || 0; });
 
   $('key-show').addEventListener('click', () => {
     showKey = !showKey;
