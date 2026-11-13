@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net"
@@ -30,20 +31,20 @@ type Config struct {
 	Key  string `toml:"key"`  // shared secret, identical on every computer
 
 	// Server only.
-	Listen        string            `toml:"listen"`
-	Row           []string          `toml:"row"`
-	Links         []Link            `toml:"links"`
-	Screens       map[string]Screen `toml:"screens"`
+	Listen        string            `toml:"listen,omitempty"`
+	Row           []string          `toml:"row,omitempty"`
 	ReleaseHotkey *string           `toml:"release_hotkey"`
 	HideCursor    *bool             `toml:"hide_cursor"`
-	PointerSpeed  float64           `toml:"pointer_speed"` // Linux server only
-	PointerAccel  *float64          `toml:"pointer_accel"` // Linux server only
+	PointerSpeed  float64           `toml:"pointer_speed,omitzero"` // Linux server only
+	PointerAccel  *float64          `toml:"pointer_accel"`          // Linux server only
+	Links         []Link            `toml:"links,omitempty"`
+	Screens       map[string]Screen `toml:"screens,omitempty"`
 
 	// Client only.
-	Server string `toml:"server"`
+	Server string `toml:"server,omitempty"`
 
 	// Both: override the detected desktop size, "1920x1080".
-	ScreenSize string `toml:"screen_size"`
+	ScreenSize string `toml:"screen_size,omitempty"`
 
 	path string
 }
@@ -54,15 +55,15 @@ type Link struct {
 	From   string `toml:"from"`
 	Side   string `toml:"side"`
 	To     string `toml:"to"`
-	OneWay bool   `toml:"one_way"`
+	OneWay bool   `toml:"one_way,omitempty"`
 }
 
 // Screen holds per-client options on the server.
 type Screen struct {
 	// Scale multiplies the cursor speed on that screen (default 1.0).
-	Scale float64 `toml:"scale"`
+	Scale float64 `toml:"scale,omitzero"`
 	// Remap replaces keys sent to that screen, e.g. {alt = "meta", meta = "alt"}.
-	Remap map[string]string `toml:"remap"`
+	Remap map[string]string `toml:"remap,omitempty"`
 }
 
 // Path returns the file the config was loaded from.
@@ -108,7 +109,7 @@ func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("no config file at %s - create one with `edgehop init server` or `edgehop init client`", path)
+			return nil, fmt.Errorf("no config file at %s - start `edgehop` to set this computer up (or use `edgehop init`)", path)
 		}
 		return nil, err
 	}
@@ -351,4 +352,170 @@ func Write(path, text string, force bool) error {
 		}
 	}
 	return os.WriteFile(path, []byte(text), 0o600)
+}
+
+// ---------------------------------------------------------------------------
+// Editing the configuration from the web interface
+
+// Form is the part of the configuration the web interface edits.
+type Form struct {
+	Role          string                `json:"role"`
+	Name          string                `json:"name"`
+	Key           string                `json:"key"`
+	Port          int                   `json:"port"`
+	Row           []string              `json:"row"`
+	Server        string                `json:"server"`
+	ReleaseHotkey string                `json:"releaseHotkey"`
+	HideCursor    bool                  `json:"hideCursor"`
+	ScreenSize    string                `json:"screenSize"`
+	Screens       map[string]FormScreen `json:"screens"`
+}
+
+// FormScreen holds the per-screen options shown in the web interface.
+type FormScreen struct {
+	Scale       float64 `json:"scale"`
+	SwapAltMeta bool    `json:"swapAltMeta"` // PC keyboard driving a Mac, or the reverse
+}
+
+func hasSwap(remap map[string]string) bool {
+	return strings.EqualFold(remap["alt"], "meta") && strings.EqualFold(remap["meta"], "alt")
+}
+
+// Port returns the port the server listens on.
+func (c *Config) Port() int {
+	if _, p, err := net.SplitHostPort(c.Listen); err == nil {
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
+	}
+	return DefaultPort
+}
+
+// Form returns the editable view of the configuration.
+func (c *Config) Form() Form {
+	f := Form{
+		Role: c.Role, Name: c.Name, Key: c.Key,
+		Port:          c.Port(),
+		Row:           append([]string{}, c.Row...),
+		Server:        c.Server,
+		ReleaseHotkey: DefaultHotkey,
+		HideCursor:    c.HideCursorEnabled(),
+		ScreenSize:    c.ScreenSize,
+		Screens:       map[string]FormScreen{},
+	}
+	if c.ReleaseHotkey != nil {
+		f.ReleaseHotkey = *c.ReleaseHotkey
+	}
+	for name, s := range c.Screens {
+		scale := s.Scale
+		if scale == 0 {
+			scale = 1
+		}
+		f.Screens[name] = FormScreen{Scale: scale, SwapAltMeta: hasSwap(s.Remap)}
+	}
+	return f
+}
+
+// Apply copies the form into the configuration. Settings the form does not
+// cover (links, other key remaps, pointer speed) are kept as they are.
+func (c *Config) Apply(f Form) {
+	c.Role = strings.ToLower(strings.TrimSpace(f.Role))
+	c.Name = strings.TrimSpace(f.Name)
+	c.Key = strings.TrimSpace(f.Key)
+	c.ScreenSize = strings.TrimSpace(f.ScreenSize)
+	if c.Role == "client" {
+		c.Server = strings.TrimSpace(f.Server)
+		return
+	}
+	host := "0.0.0.0"
+	if h, _, err := net.SplitHostPort(c.Listen); err == nil && h != "" {
+		host = h
+	}
+	port := f.Port
+	if port <= 0 || port > 65535 {
+		port = DefaultPort
+	}
+	c.Listen = net.JoinHostPort(host, strconv.Itoa(port))
+
+	c.Row = nil
+	for _, n := range f.Row {
+		if n = strings.TrimSpace(n); n != "" {
+			c.Row = append(c.Row, n)
+		}
+	}
+	if len(c.Row) == 1 && c.Row[0] == c.Name {
+		c.Row = nil // a server on its own needs no row
+	}
+	hotkey := strings.TrimSpace(f.ReleaseHotkey)
+	c.ReleaseHotkey = &hotkey
+	hide := f.HideCursor
+	c.HideCursor = &hide
+
+	// Per-screen options: only for screens that are still part of the layout.
+	known := map[string]bool{}
+	for _, n := range c.Row {
+		known[n] = true
+	}
+	for _, l := range c.Links {
+		known[l.From], known[l.To] = true, true
+	}
+	for name := range c.Screens {
+		if !known[name] || name == c.Name {
+			delete(c.Screens, name)
+		}
+	}
+	for name, fs := range f.Screens {
+		if !known[name] || name == c.Name {
+			continue
+		}
+		s := c.Screens[name]
+		s.Scale = fs.Scale
+		if s.Scale == 1 || s.Scale < 0 {
+			s.Scale = 0 // 1.0 is the default; leave it out of the file
+		}
+		if fs.SwapAltMeta != hasSwap(s.Remap) {
+			if s.Remap == nil {
+				s.Remap = map[string]string{}
+			}
+			if fs.SwapAltMeta {
+				s.Remap["alt"], s.Remap["meta"] = "meta", "alt"
+			} else {
+				delete(s.Remap, "alt")
+				delete(s.Remap, "meta")
+			}
+		}
+		if s.Scale == 0 && len(s.Remap) == 0 {
+			delete(c.Screens, name)
+			continue
+		}
+		if c.Screens == nil {
+			c.Screens = map[string]Screen{}
+		}
+		c.Screens[name] = s
+	}
+}
+
+// Encode returns the configuration as TOML text.
+func (c *Config) Encode() (string, error) {
+	var buf bytes.Buffer
+	buf.WriteString("# edgehop configuration. Edit it here or in the web interface (run `edgehop`).\n")
+	buf.WriteString("# The key is a secret: anyone who has it can control these computers.\n\n")
+	enc := toml.NewEncoder(&buf)
+	enc.Indent = ""
+	if err := enc.Encode(c); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// Save validates the configuration and writes it to path.
+func Save(path string, c *Config) error {
+	text, err := c.Encode()
+	if err != nil {
+		return err
+	}
+	if _, err := Parse(text); err != nil {
+		return err
+	}
+	return Write(path, text, true)
 }

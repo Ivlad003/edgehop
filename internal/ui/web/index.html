@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>edgehop</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="favicon.svg" alt="" width="28" height="28">
+    <span class="name">edgehop</span>
+    <span class="version" id="version"></span>
+  </div>
+  <div class="top-right">
+    <span class="pill" id="pill"></span>
+    <button type="button" class="ghost small" id="lang" aria-label="Language"></button>
+  </div>
+</header>
+
+<main>
+  <section class="card notice" id="locked" hidden>
+    <h2 data-t="lockedTitle"></h2>
+    <p data-t="lockedText"></p>
+  </section>
+
+  <section class="card notice" id="offline" hidden>
+    <h2 data-t="offlineTitle"></h2>
+    <p data-t="offlineText"></p>
+  </section>
+
+  <div id="app" hidden>
+    <section class="card" id="status-card">
+      <div class="card-head">
+        <h2 data-t="statusTitle"></h2>
+        <div class="actions">
+          <button type="button" class="primary" id="start"></button>
+          <button type="button" id="stop" data-t="stop"></button>
+        </div>
+      </div>
+      <p class="status-line" id="status-line"></p>
+      <p class="error" id="engine-exit" hidden></p>
+      <div class="screens" id="screens"></div>
+      <p class="hint" id="status-hint"></p>
+    </section>
+
+    <section class="card" id="setup-card">
+      <h2 data-t="setupTitle"></h2>
+      <p class="error" id="config-error" hidden></p>
+
+      <div class="roles" role="radiogroup">
+        <button type="button" class="role" id="role-server" role="radio">
+          <span class="role-title" data-t="roleServer"></span>
+          <span class="role-text" data-t="roleServerText"></span>
+        </button>
+        <button type="button" class="role" id="role-client" role="radio">
+          <span class="role-title" data-t="roleClient"></span>
+          <span class="role-text" data-t="roleClientText"></span>
+        </button>
+      </div>
+
+      <div id="fields" hidden>
+        <label class="field">
+          <span class="label" data-t="name"></span>
+          <input type="text" id="f-name" autocomplete="off" spellcheck="false" maxlength="40">
+          <span class="hint" data-t="nameHint"></span>
+        </label>
+
+        <div id="client-fields" hidden>
+          <label class="field">
+            <span class="label" data-t="serverAddr"></span>
+            <input type="text" id="f-server" autocomplete="off" spellcheck="false" placeholder="192.168.1.10">
+            <span class="hint" data-t="serverAddrHint"></span>
+          </label>
+        </div>
+
+        <div class="field">
+          <label class="label" for="f-key" data-t="key"></label>
+          <div class="inline">
+            <input type="password" id="f-key" autocomplete="off" spellcheck="false">
+            <button type="button" class="small" id="key-show"></button>
+            <button type="button" class="small" id="key-copy" data-t="copy"></button>
+            <button type="button" class="small" id="key-new" data-t="generate"></button>
+          </div>
+          <span class="hint" id="key-hint"></span>
+        </div>
+
+        <div id="server-fields" hidden>
+          <div class="field">
+            <span class="label" data-t="layout"></span>
+            <span class="hint" data-t="layoutHint"></span>
+            <div class="row-editor" id="row"></div>
+            <div class="inline add">
+              <input type="text" id="row-add" autocomplete="off" spellcheck="false" maxlength="40">
+              <button type="button" class="small" id="row-add-btn" data-t="addScreen"></button>
+            </div>
+          </div>
+
+          <div class="field" id="screen-opts-wrap" hidden>
+            <span class="label" data-t="screenOpts"></span>
+            <div class="screen-opts" id="screen-opts"></div>
+          </div>
+
+          <details class="advanced">
+            <summary data-t="advanced"></summary>
+            <label class="field">
+              <span class="label" data-t="port"></span>
+              <input type="number" id="f-port" min="1" max="65535">
+              <span class="hint" data-t="portHint"></span>
+            </label>
+            <label class="field">
+              <span class="label" data-t="hotkey"></span>
+              <input type="text" id="f-hotkey" autocomplete="off" spellcheck="false">
+              <span class="hint" data-t="hotkeyHint"></span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="f-hide">
+              <span data-t="hideCursor"></span>
+            </label>
+          </details>
+        </div>
+
+        <details class="advanced" id="size-details">
+          <summary data-t="sizeTitle"></summary>
+          <label class="field">
+            <span class="label" data-t="screenSize"></span>
+            <input type="text" id="f-size" autocomplete="off" spellcheck="false" placeholder="1920x1080">
+            <span class="hint" data-t="screenSizeHint"></span>
+          </label>
+        </details>
+
+        <p class="error" id="form-error" hidden></p>
+        <div class="actions">
+          <button type="button" class="primary" id="save-start" data-t="saveStart"></button>
+          <button type="button" id="save" data-t="save"></button>
+          <span class="saved" id="saved" hidden data-t="saved"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="others-card" hidden>
+      <h2 data-t="othersTitle"></h2>
+      <ol class="steps">
+        <li>
+          <span data-t="othersStep1"></span>
+          <a id="download-link" target="_blank" rel="noopener" hidden data-t="download"></a>
+        </li>
+        <li>
+          <span data-t="othersStep2"></span>
+          <dl class="facts">
+            <dt data-t="serverAddr"></dt><dd id="o-addr"></dd>
+            <dt data-t="key"></dt><dd><code id="o-key"></code> <button type="button" class="small" id="o-key-copy" data-t="copy"></button></dd>
+            <dt data-t="name"></dt><dd id="o-names"></dd>
+          </dl>
+        </li>
+        <li>
+          <span data-t="othersStep3"></span>
+          <div class="inline"><code class="cmd" id="o-cmd"></code><button type="button" class="small" id="o-cmd-copy" data-t="copy"></button></div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2 data-t="thisTitle"></h2>
+      <dl class="facts" id="this"></dl>
+    </section>
+
+    <section class="card">
+      <h2 data-t="logTitle"></h2>
+      <pre class="log" id="log"></pre>
+    </section>
+  </div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

@@ -142,7 +142,129 @@ func TestWriteAndLoad(t *testing.T) {
 	if c.Path() != path || c.Name != "c" {
 		t.Errorf("loaded %+v", c)
 	}
-	if _, err := Load(filepath.Join(t.TempDir(), "missing.toml")); err == nil || !strings.Contains(err.Error(), "edgehop init") {
-		t.Errorf("missing file error should point at `edgehop init`: %v", err)
+	if _, err := Load(filepath.Join(t.TempDir(), "missing.toml")); err == nil || !strings.Contains(err.Error(), "edgehop") {
+		t.Errorf("missing file error should say how to create one: %v", err)
+	}
+}
+
+func TestFormApplyEncodeRoundTrip(t *testing.T) {
+	c, err := Parse(`
+role = "server"
+name = "desk"
+key = "k"
+listen = "127.0.0.1:5000"
+row = ["desk", "mac", "old"]
+pointer_speed = 1.5
+
+[[links]]
+from = "desk"
+side = "top"
+to = "tv"
+
+[screens.mac]
+remap = { capslock = "ctrl" }
+
+[screens.old]
+scale = 2.0
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := c.Form()
+	if f.Port != 5000 || f.ReleaseHotkey != DefaultHotkey || !f.HideCursor || len(f.Row) != 3 {
+		t.Fatalf("form = %+v", f)
+	}
+	if f.Screens["mac"].Scale != 1 || f.Screens["mac"].SwapAltMeta || f.Screens["old"].Scale != 2 {
+		t.Fatalf("form screens = %+v", f.Screens)
+	}
+
+	// The user renames nothing, drops "old", adds "lap", swaps alt/meta for the Mac.
+	f.Row = []string{"lap", " desk ", "mac", ""}
+	f.Port = 6000
+	f.HideCursor = false
+	f.ReleaseHotkey = "ctrl+alt+f12"
+	f.Screens = map[string]FormScreen{
+		"mac":  {Scale: 1.25, SwapAltMeta: true},
+		"lap":  {Scale: 1},
+		"old":  {Scale: 3},
+		"desk": {Scale: 9},
+	}
+	c.Apply(f)
+	path := filepath.Join(t.TempDir(), "edgehop.toml")
+	if err := Save(path, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Listen != "127.0.0.1:6000" {
+		t.Errorf("listen = %q (the host must be kept)", got.Listen)
+	}
+	if strings.Join(got.Row, ",") != "lap,desk,mac" {
+		t.Errorf("row = %v", got.Row)
+	}
+	if got.HideCursorEnabled() || *got.ReleaseHotkey != "ctrl+alt+f12" {
+		t.Errorf("hide=%v hotkey=%v", got.HideCursorEnabled(), *got.ReleaseHotkey)
+	}
+	mac := got.Screens["mac"]
+	if mac.Scale != 1.25 || mac.Remap["alt"] != "meta" || mac.Remap["meta"] != "alt" || mac.Remap["capslock"] != "ctrl" {
+		t.Errorf("mac = %+v (the existing capslock remap must survive)", mac)
+	}
+	if _, ok := got.Screens["old"]; ok {
+		t.Errorf("options of a removed screen must be dropped")
+	}
+	if _, ok := got.Screens["lap"]; ok {
+		t.Errorf("a screen with default options needs no section")
+	}
+	if _, ok := got.Screens["desk"]; ok {
+		t.Errorf("the server itself has no per-screen options")
+	}
+	// Settings the form does not show must survive.
+	if got.PointerSpeed != 1.5 || len(got.Links) != 1 || got.Links[0].To != "tv" {
+		t.Errorf("pointer_speed=%v links=%+v", got.PointerSpeed, got.Links)
+	}
+
+	// Un-ticking the swap removes only those two entries.
+	f = got.Form()
+	if !f.Screens["mac"].SwapAltMeta {
+		t.Fatalf("swap not detected: %+v", f.Screens)
+	}
+	f.Screens["mac"] = FormScreen{Scale: 1, SwapAltMeta: false}
+	got.Apply(f)
+	if r := got.Screens["mac"].Remap; len(r) != 1 || r["capslock"] != "ctrl" {
+		t.Errorf("remap after un-swapping = %v", r)
+	}
+}
+
+func TestApplyClientAndInvalidSave(t *testing.T) {
+	c := &Config{}
+	c.Apply(Form{Role: "Client", Name: " lap ", Key: " secret ", Server: " 10.0.0.5 "})
+	path := filepath.Join(t.TempDir(), "c.toml")
+	if err := Save(path, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Role != "client" || got.Name != "lap" || got.Key != "secret" || got.Server != "10.0.0.5:24920" {
+		t.Errorf("client = %+v", got)
+	}
+	// An invalid configuration must not be written.
+	bad := &Config{}
+	bad.Apply(Form{Role: "server", Name: "a", Key: "", Row: []string{"a", "b"}})
+	badPath := filepath.Join(t.TempDir(), "bad.toml")
+	if err := Save(badPath, bad); err == nil {
+		t.Fatal("saving a config without a key must fail")
+	}
+	if _, err := Load(badPath); err == nil {
+		t.Fatal("an invalid config was written to disk")
+	}
+	// A lone server needs no row at all.
+	solo := &Config{}
+	solo.Apply(Form{Role: "server", Name: "solo", Key: "k", Row: []string{"solo"}})
+	if solo.Row != nil || solo.Listen != "0.0.0.0:24920" {
+		t.Errorf("solo = %+v", solo)
 	}
 }

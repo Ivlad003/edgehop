@@ -182,6 +182,34 @@ func (s *Server) Connected() []string {
 	return out
 }
 
+// ClientInfo describes one connected client.
+type ClientInfo struct {
+	Name  string  `json:"name"`
+	OS    string  `json:"os"`
+	W     int     `json:"w"`
+	H     int     `json:"h"`
+	Addr  string  `json:"addr"`
+	UDP   bool    `json:"udp"`   // cursor motion travels over UDP
+	RTTMs float64 `json:"rttMs"` // last measured round trip, milliseconds
+}
+
+// Clients returns the connected clients, sorted by name.
+func (s *Server) Clients() []ClientInfo {
+	s.idMu.RLock()
+	defer s.idMu.RUnlock()
+	out := make([]ClientInfo, 0, len(s.byID))
+	for _, sess := range s.byID {
+		host, _, _ := net.SplitHostPort(sess.remote)
+		out = append(out, ClientInfo{
+			Name: sess.name, OS: sess.os, W: sess.w, H: sess.h, Addr: host,
+			UDP:   sess.udp.Load() != nil,
+			RTTMs: math.Round(float64(sess.rtt.Load())/1e4) / 100,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // UDPReady reports whether cursor motion to the named client travels over UDP.
 func (s *Server) UDPReady(name string) bool {
 	s.idMu.RLock()

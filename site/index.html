@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>edgehop — one mouse and keyboard for all your computers</title>
+<meta name="description" content="Push the cursor against the edge of the screen and it continues on the next computer, keyboard included. Any mouse and keyboard. Windows, macOS, Linux. Free; the source code is on GitHub.">
+<meta name="edgehop-repo" content="__REPO__">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="./">
+    <img src="favicon.svg" alt="" width="30" height="30">
+    <span>edgehop</span>
+  </a>
+  <nav>
+    <a href="#download" data-uk="Завантажити">Download</a>
+    <a href="#start" data-uk="Як почати">Get started</a>
+    <a class="repo-link" href="#" data-uk="Код на GitHub">Source on GitHub</a>
+    <button type="button" id="lang" aria-label="Language">УКР</button>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="hero-text">
+      <h1 data-uk="Одна миша й клавіатура на всі комп'ютери">One mouse and keyboard for all your computers</h1>
+      <p class="lead" data-uk="Доведіть курсор до краю екрана — і він уже на сусідньому комп'ютері, разом із клавіатурою. Працює з будь-якою мишею та клавіатурою: Bluetooth, USB чи вбудованими.">Push the cursor against the edge of the screen and it continues on the next computer, keyboard included. Works with any mouse and keyboard: Bluetooth, USB or built in.</p>
+      <div class="cta">
+        <a class="button primary" id="main-download" href="#download">
+          <span data-uk="Завантажити для">Download for</span> <span id="main-os">Windows</span>
+        </a>
+        <a class="button" href="#download" data-uk="Інші системи">Other systems</a>
+      </div>
+      <p class="small" id="release-line" data-uk="Windows · macOS · Linux — безкоштовно, код на GitHub">Windows · macOS · Linux — free, source code on GitHub</p>
+    </div>
+    <div class="hero-art" aria-hidden="true">
+      <svg viewBox="0 0 460 250" role="img">
+        <rect class="scr" x="10" y="60" width="130" height="92" rx="9"/>
+        <rect class="scr self" x="165" y="38" width="150" height="114" rx="9"/>
+        <rect class="scr" x="340" y="60" width="110" height="92" rx="9"/>
+        <rect class="stand" x="225" y="152" width="30" height="16"/>
+        <rect class="stand" x="200" y="168" width="80" height="6" rx="3"/>
+        <text class="lbl" x="75" y="176" text-anchor="middle">Linux</text>
+        <text class="lbl" x="240" y="196" text-anchor="middle">Windows</text>
+        <text class="lbl" x="395" y="176" text-anchor="middle">macOS</text>
+        <path class="trail" d="M70 112 C 150 70, 250 130, 395 96"/>
+        <g class="cursor">
+          <path d="M0 0v22l6-5.5 4.2 9.3 4.1-1.9-4.2-9.2 8-.6z"/>
+        </g>
+        <rect class="kbd" x="180" y="210" width="96" height="26" rx="6"/>
+        <rect class="mouse" x="290" y="206" width="22" height="34" rx="11"/>
+      </svg>
+    </div>
+  </section>
+
+  <section class="features">
+    <div class="feature">
+      <h3 data-uk="Будь-які пристрої">Any devices</h3>
+      <p data-uk="Не потрібна спеціальна миша. Миша й клавіатура підключаються до одного комп'ютера, решта отримують їх мережею.">No special mouse needed. The mouse and keyboard stay connected to one computer; the others receive them over the network.</p>
+    </div>
+    <div class="feature">
+      <h3 data-uk="Два комп'ютери чи десять">Two computers or ten</h3>
+      <p data-uk="Розставте екрани в ряд так, як вони стоять на столі. Вимкнений комп'ютер просто пропускається.">Arrange the screens in a row the way they stand on your desk. A computer that is switched off is simply skipped.</p>
+    </div>
+    <div class="feature">
+      <h3 data-uk="Без затримок">No lag</h3>
+      <p data-uk="Рух курсора йде по UDP, тож втрата пакета у Wi-Fi не «заморожує» курсор. Затримка обробки — менше мілісекунди.">Cursor motion travels over UDP, so a lost Wi-Fi packet never freezes the cursor. Processing takes less than a millisecond.</p>
+    </div>
+    <div class="feature">
+      <h3 data-uk="Зашифровано">Encrypted</h3>
+      <p data-uk="Усе, що ви друкуєте, передається зашифрованим (X25519 + AES-256-GCM). Жодних акаунтів і хмар — тільки ваша локальна мережа.">Everything you type is encrypted on the wire (X25519 + AES-256-GCM). No accounts, no cloud — only your local network.</p>
+    </div>
+    <div class="feature">
+      <h3 data-uk="Один файл">One file</h3>
+      <p data-uk="Нічого встановлювати. Запустіть файл — у браузері відкриється сторінка налаштувань.">Nothing to install. Run the file and a settings page opens in your browser.</p>
+    </div>
+    <div class="feature">
+      <h3 data-uk="Код на GitHub">Source on GitHub</h3>
+      <p data-uk="Увесь код відкрито лежить на GitHub. Написано на Go без залежностей на C, збирається з будь-якої системи під будь-яку.">All the code is on GitHub for anyone to read. Written in Go with no C dependencies; builds from any system for any system.</p>
+    </div>
+  </section>
+
+  <section id="start" class="block">
+    <h2 data-uk="Як почати">Get started</h2>
+    <ol class="steps">
+      <li>
+        <h3 data-uk="Завантажте й запустіть edgehop на кожному комп'ютері">Download and run edgehop on every computer</h3>
+        <p data-uk="У браузері відкриється сторінка налаштувань. Вона доступна лише з цього комп'ютера.">A settings page opens in the browser. It is reachable only from that computer.</p>
+      </li>
+      <li>
+        <h3 data-uk="На комп'ютері з мишею оберіть «Миша й клавіатура підключені сюди»">On the computer with the mouse choose “The mouse and keyboard are connected here”</h3>
+        <p data-uk="Розставте екрани зліва направо і натисніть «Зберегти і запустити». Сторінка покаже адресу та ключ для інших комп'ютерів.">Arrange the screens from left to right and press “Save and start”. The page shows the address and the key for the other computers.</p>
+      </li>
+      <li>
+        <h3 data-uk="На інших оберіть «Цим комп'ютером керують з іншого»">On the others choose “This computer is controlled from another”</h3>
+        <p data-uk="Введіть адресу й ключ із першого комп'ютера. Готово: ведіть курсор за край екрана.">Enter the address and the key from the first computer. Done: move the cursor past the edge of the screen.</p>
+      </li>
+    </ol>
+    <p class="note" data-uk="Ctrl+Alt+Shift+Backspace будь-коли повертає курсор на комп'ютер з мишею.">Ctrl+Alt+Shift+Backspace always brings the cursor back to the computer with the mouse.</p>
+  </section>
+
+  <section id="download" class="block">
+    <h2 data-uk="Завантажити">Download</h2>
+    <p class="small" id="release-info"></p>
+    <div class="downloads">
+      <div class="dl">
+        <h3>Windows</h3>
+        <a class="button" data-file="edgehop-windows-amd64.exe" href="#">x64 (Intel / AMD)</a>
+        <a class="button" data-file="edgehop-windows-arm64.exe" href="#">ARM64</a>
+        <p class="small" data-uk="Файл не підписаний: якщо SmartScreen попереджає, натисніть «Докладніше» → «Виконати в будь-якому разі». Під час першого запуску дозвольте доступ у брандмауері для приватних мереж.">The file is not signed: if SmartScreen warns, click “More info” → “Run anyway”. On first start allow access in the firewall for private networks.</p>
+      </div>
+      <div class="dl">
+        <h3>macOS</h3>
+        <a class="button" data-file="edgehop-darwin-arm64" href="#">Apple Silicon (M1+)</a>
+        <a class="button" data-file="edgehop-darwin-amd64" href="#">Intel</a>
+        <p class="small" data-uk="У терміналі зніміть карантин і запустіть:">In Terminal, remove the quarantine flag and run it:</p>
+        <pre>chmod +x edgehop-darwin-arm64
+xattr -d com.apple.quarantine edgehop-darwin-arm64
+./edgehop-darwin-arm64</pre>
+        <p class="small" data-uk="Дозвольте терміналу Accessibility та Input Monitoring у System Settings → Privacy &amp; Security.">Allow your terminal under Accessibility and Input Monitoring in System Settings → Privacy &amp; Security.</p>
+      </div>
+      <div class="dl">
+        <h3>Linux</h3>
+        <a class="button" data-file="edgehop-linux-amd64" href="#">x64</a>
+        <a class="button" data-file="edgehop-linux-arm64" href="#">ARM64</a>
+        <pre>chmod +x edgehop-linux-amd64
+./edgehop-linux-amd64</pre>
+        <p class="small"><span data-uk="Потрібен доступ до /dev/uinput та /dev/input —">Needs access to /dev/uinput and /dev/input —</span> <a class="readme-link" href="#" data-uk="як його дати">how to grant it</a>.</p>
+      </div>
+    </div>
+    <p class="small"><a class="releases-link" href="#" data-uk="Усі версії та контрольні суми">All versions and checksums</a></p>
+  </section>
+
+  <section class="block status">
+    <h2 data-uk="Стан проєкту">Project status</h2>
+    <p data-uk="Чесно: проєкт молодий. Windows перевірено на реальній машині — і як комп'ютер з мишею, і як керований. Версії для macOS та Linux збираються, але на реальних комп'ютерах ще не перевірялись, тож перший запуск може виявити помилки.">To be upfront: the project is young. Windows has been checked on a real machine, both as the computer with the mouse and as a controlled one. The macOS and Linux versions build, but have not been run on real computers yet, so a first run may reveal bugs.</p>
+    <p><span data-uk="Знайшли помилку або щось не працює?">Found a bug, or something does not work?</span> <a class="issues-link" href="#" data-uk="Напишіть про це на GitHub">Report it on GitHub</a>.</p>
+    <ul class="limits">
+      <li data-uk="Буфер обміну між комп'ютерами поки не синхронізується.">The clipboard is not shared between computers yet.</li>
+      <li data-uk="Ігри, що захоплюють мишу, на керованому комп'ютері не працюватимуть.">Games that capture the mouse will not work on a controlled computer.</li>
+      <li data-uk="Ctrl+Alt+Del та Win+L завжди спрацьовують на комп'ютері з клавіатурою.">Ctrl+Alt+Del and Win+L always act on the computer with the keyboard.</li>
+    </ul>
+  </section>
+</main>
+
+<footer>
+  <span>edgehop</span>
+  <a class="repo-link" href="#">GitHub</a>
+  <a class="readme-link" href="#" data-uk="Документація">Documentation</a>
+</footer>
+<script src="site.js"></script>
+</body>
+</html>
