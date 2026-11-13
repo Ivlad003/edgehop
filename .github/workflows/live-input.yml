@@ -1,0 +1,52 @@
+# Exercises the real input layer of the operating system: capturing and
+# injecting mouse and keyboard events, not just compiling the code.
+#
+#   Linux  - through the kernel: virtual devices via /dev/uinput, read back
+#            from /dev/input (no desktop needed, runs as root)
+#   macOS  - through the window server: posted events and an event tap
+#
+# Windows is checked on a real desktop with `edgehop selftest --grab`.
+name: live-input
+
+on:
+  push:
+    paths:
+      - 'internal/input/**'
+      - 'internal/keys/**'
+      - 'internal/layout/**'
+      - '.github/workflows/live-input.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Make /dev/uinput available
+        run: |
+          sudo modprobe uinput || true
+          ls -l /dev/uinput /dev/input/
+      - name: Capture and injection through the kernel
+        run: |
+          go test -c -o live.test ./internal/input/
+          sudo EDGEHOP_LIVE=1 ./live.test -test.run Live -test.v -test.timeout 180s 2>&1 | tee live.log
+          # A skipped live test would mean nothing was verified.
+          if grep -q -- '--- SKIP' live.log; then echo "::error::the live input tests were skipped"; exit 1; fi
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Capture and injection through the window server
+        run: |
+          EDGEHOP_LIVE=1 go test ./internal/input/ -run Live -v -timeout 180s 2>&1 | tee live.log
+          if grep -q -- '--- SKIP' live.log; then echo "::error::the live input tests were skipped"; exit 1; fi

@@ -53,6 +53,7 @@ const (
 	Backslash  = 43
 	Z          = 44
 	C          = 46
+	B          = 48
 	Comma      = 51
 	Dot        = 52
 	Slash      = 53
@@ -186,6 +187,20 @@ func Name(code uint16) string {
 		return fmt.Sprintf("key%d", code)
 	}
 	return best
+}
+
+// Codes returns every key code edgehop knows by name, sorted.
+func Codes() []uint16 {
+	seen := map[uint16]bool{}
+	var out []uint16
+	for _, c := range nameToCode {
+		if !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // Names returns every known key name, sorted.
