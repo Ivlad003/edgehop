@@ -19,15 +19,15 @@ import (
 	"syscall"
 	"time"
 
-	"edgehop/internal/client"
-	"edgehop/internal/config"
-	"edgehop/internal/input"
-	"edgehop/internal/keys"
-	"edgehop/internal/layout"
-	"edgehop/internal/logx"
-	"edgehop/internal/secure"
-	"edgehop/internal/server"
-	"edgehop/internal/ui"
+	"github.com/Ivlad003/edgehop/internal/client"
+	"github.com/Ivlad003/edgehop/internal/config"
+	"github.com/Ivlad003/edgehop/internal/input"
+	"github.com/Ivlad003/edgehop/internal/keys"
+	"github.com/Ivlad003/edgehop/internal/layout"
+	"github.com/Ivlad003/edgehop/internal/logx"
+	"github.com/Ivlad003/edgehop/internal/secure"
+	"github.com/Ivlad003/edgehop/internal/server"
+	"github.com/Ivlad003/edgehop/internal/ui"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.repoURL=...".

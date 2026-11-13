@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"edgehop/internal/keys"
-	"edgehop/internal/layout"
+	"github.com/Ivlad003/edgehop/internal/keys"
+	"github.com/Ivlad003/edgehop/internal/layout"
 )
 
 func TestTemplatesParse(t *testing.T) {

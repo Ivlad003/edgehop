@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"edgehop/internal/config"
+	"github.com/Ivlad003/edgehop/internal/config"
 )
 
 // The test binary doubles as a fake engine: with EDGEHOP_FAKE_ENGINE set it

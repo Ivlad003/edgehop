@@ -3,7 +3,7 @@ package input
 import (
 	"testing"
 
-	"edgehop/internal/keys"
+	"github.com/Ivlad003/edgehop/internal/keys"
 )
 
 func TestKeyTrackerPlainRemoteTyping(t *testing.T) {

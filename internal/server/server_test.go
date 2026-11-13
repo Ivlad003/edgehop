@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"edgehop/internal/client"
-	"edgehop/internal/input"
-	"edgehop/internal/keys"
-	"edgehop/internal/layout"
-	"edgehop/internal/logx"
-	"edgehop/internal/server"
+	"github.com/Ivlad003/edgehop/internal/client"
+	"github.com/Ivlad003/edgehop/internal/input"
+	"github.com/Ivlad003/edgehop/internal/keys"
+	"github.com/Ivlad003/edgehop/internal/layout"
+	"github.com/Ivlad003/edgehop/internal/logx"
+	"github.com/Ivlad003/edgehop/internal/server"
 )
 
 func TestMain(m *testing.M) {

@@ -19,8 +19,8 @@ import (
 	"time"
 	"unsafe"
 
-	"edgehop/internal/keys"
-	"edgehop/internal/layout"
+	"github.com/Ivlad003/edgehop/internal/keys"
+	"github.com/Ivlad003/edgehop/internal/layout"
 )
 
 // Linux backend.

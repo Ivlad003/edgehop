@@ -1,4 +1,4 @@
-module edgehop
+module github.com/Ivlad003/edgehop
 
 go 1.21
 

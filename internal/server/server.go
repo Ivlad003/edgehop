@@ -17,12 +17,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"edgehop/internal/input"
-	"edgehop/internal/keys"
-	"edgehop/internal/layout"
-	"edgehop/internal/logx"
-	"edgehop/internal/proto"
-	"edgehop/internal/secure"
+	"github.com/Ivlad003/edgehop/internal/input"
+	"github.com/Ivlad003/edgehop/internal/keys"
+	"github.com/Ivlad003/edgehop/internal/layout"
+	"github.com/Ivlad003/edgehop/internal/logx"
+	"github.com/Ivlad003/edgehop/internal/proto"
+	"github.com/Ivlad003/edgehop/internal/secure"
 )
 
 const (

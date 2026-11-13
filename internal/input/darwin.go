@@ -13,9 +13,9 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"edgehop/internal/keys"
-	"edgehop/internal/layout"
-	"edgehop/internal/logx"
+	"github.com/Ivlad003/edgehop/internal/keys"
+	"github.com/Ivlad003/edgehop/internal/layout"
+	"github.com/Ivlad003/edgehop/internal/logx"
 )
 
 // macOS backend.

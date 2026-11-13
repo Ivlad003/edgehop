@@ -14,8 +14,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"edgehop/internal/keys"
-	"edgehop/internal/layout"
+	"github.com/Ivlad003/edgehop/internal/keys"
+	"github.com/Ivlad003/edgehop/internal/layout"
 )
 
 // DefaultPort is used when no port is given.

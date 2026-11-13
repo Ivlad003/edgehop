@@ -23,11 +23,11 @@ import (
 	"sync"
 	"time"
 
-	"edgehop/internal/config"
-	"edgehop/internal/input"
-	"edgehop/internal/layout"
-	"edgehop/internal/logx"
-	"edgehop/internal/secure"
+	"github.com/Ivlad003/edgehop/internal/config"
+	"github.com/Ivlad003/edgehop/internal/input"
+	"github.com/Ivlad003/edgehop/internal/layout"
+	"github.com/Ivlad003/edgehop/internal/logx"
+	"github.com/Ivlad003/edgehop/internal/secure"
 )
 
 //go:embed web
