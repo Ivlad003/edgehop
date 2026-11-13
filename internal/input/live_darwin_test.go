@@ -159,13 +159,43 @@ func TestLiveMac(t *testing.T) {
 	c.Grab()
 	time.Sleep(200 * time.Millisecond)
 	parkX, parkY := cursor()
-	inj.MoveAbs(300, 300)
 	drain(c.Events())
-	inj.MoveAbs(310, 305)
-	inj.MoveAbs(302, 301)
+	// A real mouse reports movement without moving the frozen cursor. Imitate
+	// that: events at the cursor's own position that carry only a movement.
+	mouseDelta := func(dx, dy int64) {
+		ev := cgEventCreateMouseEvent(inj.src, evtMouseMoved, parkX, parkY, 0)
+		cgEventSetIntegerValueField(ev, fldDeltaX, dx)
+		cgEventSetIntegerValueField(ev, fldDeltaY, dy)
+		cgEventPost(cgHIDEventTap, ev)
+		cfRelease(ev)
+	}
+	mouseDelta(10, 5)
+	mouseDelta(-8, -4)
 	waitCaptured(t, "remote motion", c.Events(),
 		Event{Kind: EvMotion, DX: 10, DY: 5},
 		Event{Kind: EvMotion, DX: -8, DY: -4})
+	// A long push in one direction must arrive in full, with nothing lost and
+	// nothing thrown back: 60 steps of 25 = 1500 to the right.
+	for i := 0; i < 60; i++ {
+		mouseDelta(25, 0)
+	}
+	var total float64
+	backwards := 0
+	for _, e := range drain(c.Events()) {
+		if e.Kind == EvMotion {
+			total += e.DX
+			if e.DX < 0 {
+				backwards++
+			}
+		}
+	}
+	if total != 1500 || backwards != 0 {
+		t.Errorf("a 1500 px push arrived as %.0f px with %d backward steps", total, backwards)
+	}
+	if cx, cy := cursor(); math.Abs(cx-parkX) > 2 || math.Abs(cy-parkY) > 2 {
+		t.Errorf("the cursor moved to %.0f,%.0f during remote motion (it was frozen at %.0f,%.0f)", cx, cy, parkX, parkY)
+	}
+	t.Log("capture: remote motion arrives in full and the cursor stays frozen")
 
 	// Every key edgehop can send to a Mac, one at a time.
 	tested := 0
