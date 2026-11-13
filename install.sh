@@ -74,6 +74,10 @@ if [ "$os" = darwin ] && command -v xattr >/dev/null 2>&1; then
 fi
 
 echo "Installed $("$dir/edgehop" version) to $dir/edgehop"
+if command -v pgrep >/dev/null 2>&1 && pgrep -x edgehop >/dev/null 2>&1; then
+	echo "edgehop is running and keeps using the old version: quit it (Ctrl+C in its"
+	echo "window) and start it again."
+fi
 echo
 
 case ":$PATH:" in
