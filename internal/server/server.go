@@ -55,6 +55,22 @@ type Config struct {
 	Layout  *layout.Layout
 	Screens map[string]ScreenOpts
 	Hotkey  keys.Hotkey
+	// AutoScale adapts the cursor speed to each client's screen: the mouse
+	// movement is measured in the server's pixels, and a screen with more
+	// pixels would otherwise need proportionally more hand movement. The
+	// per-screen Scale option multiplies the automatic factor.
+	AutoScale bool
+}
+
+// autoScale returns how much faster the cursor should move on a client whose
+// desktop is clientH pixels tall. Height is used rather than width because a
+// second monitor next to the first doubles the width but not the density.
+func autoScale(capture input.Capture, clientH int) float64 {
+	_, serverH := capture.Size()
+	if serverH <= 0 || clientH <= 0 {
+		return 1
+	}
+	return math.Max(0.5, math.Min(float64(clientH)/float64(serverH), 3))
 }
 
 type session struct {
@@ -424,6 +440,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 		sess.remap = o.Remap
 	}
+	if s.cfg.AutoScale {
+		sess.scale *= autoScale(s.cap, sess.h)
+	}
 	sess.pong.Store(time.Now().UnixNano())
 
 	s.idMu.Lock()
@@ -549,7 +568,7 @@ func (s *Server) handleCtl(m ctlMsg) {
 		}
 		s.byName[sess.name] = sess
 		s.updateArmed()
-		logx.Infof("connected: %s (%s, %dx%d) from %s", sess.name, sess.os, sess.w, sess.h, sess.remote)
+		logx.Infof("connected: %s (%s, %dx%d) from %s, cursor speed x%.2f", sess.name, sess.os, sess.w, sess.h, sess.remote, sess.scale)
 		return
 	}
 	if s.byName[sess.name] != sess {

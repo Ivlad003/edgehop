@@ -226,8 +226,8 @@ func TestLiveMac(t *testing.T) {
 
 	// The hidden cursor must not have wandered far from where it was parked.
 	cx, cy := cursor()
-	if math.Abs(cx-parkX) > strayLimit+60 || math.Abs(cy-parkY) > strayLimit+60 {
-		t.Errorf("the cursor drifted to %.0f,%.0f while remote (parked at %.0f,%.0f)", cx, cy, parkX, parkY)
+	if math.Abs(cx-parkX) > 2 || math.Abs(cy-parkY) > 2 {
+		t.Errorf("the cursor moved to %.0f,%.0f while remote (it was frozen at %.0f,%.0f)", cx, cy, parkX, parkY)
 	}
 
 	// Back to local: the cursor appears where it re-enters, and input passes again.

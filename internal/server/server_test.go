@@ -166,6 +166,11 @@ type rig struct {
 
 func startServer(t *testing.T, name string, row []string, screens map[string]server.ScreenOpts) *rig {
 	t.Helper()
+	return startServerWith(t, name, row, screens, false)
+}
+
+func startServerWith(t *testing.T, name string, row []string, screens map[string]server.ScreenOpts, autoScale bool) *rig {
+	t.Helper()
 	l := layout.New()
 	l.Add(name)
 	l.AddRow(row)
@@ -176,7 +181,7 @@ func startServer(t *testing.T, name string, row []string, screens map[string]ser
 	fc := newFakeCapture()
 	srv := server.New(server.Config{
 		Name: name, Listen: "127.0.0.1:0", Key: "test-key",
-		Layout: l, Screens: screens, Hotkey: hk,
+		Layout: l, Screens: screens, Hotkey: hk, AutoScale: autoScale,
 	}, fc)
 	if err := srv.Listen(); err != nil {
 		t.Fatal(err)
@@ -547,4 +552,34 @@ func TestUnknownClientIsReportedOnBothSides(t *testing.T) {
 	go func() { mac.Run(ctx3); close(done3) }()
 	t.Cleanup(func() { cancel3(); <-done3 })
 	eventually(t, "mac to connect", func() bool { return mac.Connected() && mac.LastError() == "" })
+}
+
+// With automatic speed the cursor covers a screen that has more pixels with
+// the same hand movement; the per-screen option multiplies that.
+func TestAutomaticCursorSpeed(t *testing.T) {
+	// The fake server desktop is 1080 pixels tall.
+	r := startServerWith(t, "desk", []string{"desk", "big", "tiny", "fast"}, map[string]server.ScreenOpts{
+		"fast": {Scale: 2},
+	}, true)
+	big, _ := r.connect("big", 4000, 2160)   // twice as tall: x2
+	tiny, _ := r.connect("tiny", 4000, 270)  // a quarter: limited to x0.5
+	fast, _ := r.connect("fast", 4000, 1080) // same height, option x2
+
+	r.cap.edge(layout.Right, 0)
+	r.waitFocus("big")
+	waitPos(t, big, 2, 0)
+	r.cap.move(100, 50)
+	waitPos(t, big, 202, 100)
+
+	r.cap.move(2000, 0) // x2 = 4000: through the right edge into "tiny"
+	r.waitFocus("tiny")
+	waitPos(t, tiny, 2, 12) // 100/2159 of 269
+	r.cap.move(100, 40)
+	waitPos(t, tiny, 52, 32)
+
+	r.cap.move(8000, 0) // x0.5 = 4000: on into "fast"
+	r.waitFocus("fast")
+	fx, fy := fast.pos()
+	r.cap.move(100, 10)
+	waitPos(t, fast, fx+200, fy+20)
 }

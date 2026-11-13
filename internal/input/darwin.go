@@ -25,8 +25,8 @@ import (
 //
 // Capture is an event tap. In remote mode the tap swallows every event and
 // reports mouse movement from the events' delta fields. The cursor is hidden
-// and kept near the middle of the main display so it cannot wander into a
-// hot corner or the Dock while the mouse is steering another computer.
+// and frozen in place (mouse and cursor are dissociated), so it cannot wander
+// around this screen while the mouse is steering another computer.
 //
 // Injection posts CoreGraphics events. Modifier state and click counts are
 // tracked here because synthetic events do not get them automatically.
@@ -80,7 +80,6 @@ const (
 	pixelsPerNotch    = 40.0 // how far one wheel notch scrolls
 	hidSystemState    = 1
 	cfStringUTF8      = 0x08000100
-	strayLimit        = 200 // px the hidden cursor may drift before it is re-centred
 	doubleClickWindow = 500 * time.Millisecond
 )
 
@@ -128,6 +127,11 @@ var (
 	cgRequestListenEventAccess func() bool
 	cgsDefaultConnection       func() int32
 	cgsSetConnectionProperty   func(cid, target int32, key, value uintptr) int32
+	// How long macOS ignores the real mouse and keyboard after the cursor
+	// was moved or an event was posted by a program.
+	cgSetSuppressionInterval       func(seconds float64) int32
+	cgSourceSetSuppressionInterval func(src uintptr, seconds float64)
+	cgSourceSetSuppressionFilter   func(src uintptr, filter, state uint32)
 )
 
 func macInit() error {
@@ -199,6 +203,9 @@ func macInit() error {
 		optional(&cgRequestListenEventAccess, "CGRequestListenEventAccess")
 		optional(&cgsDefaultConnection, "_CGSDefaultConnection")
 		optional(&cgsSetConnectionProperty, "CGSSetConnectionProperty")
+		optional(&cgSetSuppressionInterval, "CGSetLocalEventsSuppressionInterval")
+		optional(&cgSourceSetSuppressionInterval, "CGEventSourceSetLocalEventsSuppressionInterval")
+		optional(&cgSourceSetSuppressionFilter, "CGEventSourceSetLocalEventsFilterDuringSuppressionState")
 	})
 	return macErr
 }
@@ -280,7 +287,6 @@ type macCapture struct {
 	armed        uint8
 	desk         layout.Desktop
 	deskAt       time.Time
-	park         cgPoint
 	buttons      uint32
 	localButtons uint32
 	kt           keyTracker
@@ -371,14 +377,14 @@ func (c *macCapture) handle(etype uint32, ev uintptr) bool {
 	switch etype {
 	case evtMouseMoved, evtLeftDragged, evtRightDragged, evtOtherDragged:
 		if c.remote {
+			// The cursor is frozen (see Grab), so the event's delta fields
+			// are the mouse movement. The cursor is never moved while
+			// remote: a warp makes macOS pause mouse input and distorts the
+			// next movement, which shows up as a cursor that sticks and jerks.
 			dx := cgEventGetIntegerValueField(ev, fldDeltaX)
 			dy := cgEventGetIntegerValueField(ev, fldDeltaY)
 			if dx != 0 || dy != 0 {
 				emit(c.events, Event{Kind: EvMotion, DX: float64(dx), DY: float64(dy)})
-			}
-			p := cgEventGetLocation(ev)
-			if math.Abs(p.X-c.park.X) > strayLimit || math.Abs(p.Y-c.park.Y) > strayLimit {
-				warp(c.park.X, c.park.Y)
 			}
 			return true
 		}
@@ -509,13 +515,17 @@ func (c *macCapture) Grab() {
 	if c.remote {
 		return
 	}
-	main := cgMainDisplayID()
-	c.park = cgPoint{float64(cgDisplayPixelsWide(main)) / 2, float64(cgDisplayPixelsHigh(main)) / 2}
-	warp(c.park.X, c.park.Y)
+	// Hide the cursor and freeze it where it is. While frozen, mouse events
+	// keep arriving with their movement in the delta fields, and no local
+	// application sees the cursor move. (Same recipe as Deskflow.)
 	if c.hide {
-		cgDisplayHideCursor(main)
+		cgDisplayHideCursor(cgMainDisplayID())
 		c.hidden = true
 	}
+	if cgSetSuppressionInterval != nil {
+		cgSetSuppressionInterval(0.0001)
+	}
+	cgAssociateMouseAndCursor(0)
 	c.remote = true
 }
 
@@ -526,6 +536,12 @@ func (c *macCapture) Release(side layout.Side, frac float64, doWarp bool) {
 	c.kt.clearRemote()
 	c.desk = layout.NewDesktop(Monitors())
 	c.deskAt = time.Now()
+	// Give the mouse its cursor back, and do not let macOS ignore the mouse
+	// for a moment after the cursor is repositioned.
+	cgAssociateMouseAndCursor(1)
+	if cgSetSuppressionInterval != nil {
+		cgSetSuppressionInterval(0)
+	}
 	if doWarp {
 		x, y := c.desk.Entry(side, frac, 2)
 		warp(float64(x), float64(y))
@@ -593,6 +609,19 @@ func NewInjector(opts Options) (Injector, error) {
 	}
 	m := &macInjector{modDown: map[uint16]bool{}}
 	m.src = cgEventSourceCreate(hidSystemState)
+	// By default macOS ignores the computer's own mouse and keyboard for a
+	// quarter of a second after every posted event. Turn that off, so this
+	// computer stays usable with its own devices while it is being controlled.
+	if m.src != 0 {
+		if cgSourceSetSuppressionInterval != nil {
+			cgSourceSetSuppressionInterval(m.src, 0)
+		}
+		if cgSourceSetSuppressionFilter != nil {
+			const permitAll = 0x7                             // local mouse, local keyboard and system events
+			cgSourceSetSuppressionFilter(m.src, permitAll, 0) // during the suppression interval
+			cgSourceSetSuppressionFilter(m.src, permitAll, 1) // during a remote mouse drag
+		}
+	}
 	m.bounds = layout.NewDesktop(Monitors()).Bounds
 	return m, nil
 }

@@ -343,7 +343,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 
 	srv := server.New(server.Config{
 		Name: cfg.Name, Listen: cfg.Listen, Key: cfg.Key,
-		Layout: lay, Screens: screens, Hotkey: hotkey,
+		Layout: lay, Screens: screens, Hotkey: hotkey, AutoScale: true,
 	}, capture)
 	if err := srv.Listen(); err != nil {
 		return err
