@@ -23,7 +23,18 @@ const TEXT = {
     noOthers: 'Інших екранів у розкладці ще немає — додайте їх нижче.',
     clientConnected: 'Підключено до {0}. Курсор зараз на іншому комп\'ютері.',
     clientActive: 'Підключено до {0}. Курсор зараз тут.',
-    clientWaiting: 'Очікування сервера {0}… Перевірте адресу, ключ і що edgehop запущено на сервері.',
+    clientWaiting: "Очікування сервера {0}…",
+    errUnreachable: "Сервер {0} не відповідає. Перевірте адресу, що edgehop там запущено і що брандмауер сервера дозволяє його порт.",
+    errBadKey: "Сервер відповідає, але ключ не збігається. Скопіюйте ключ зі сторінки edgehop на сервері.",
+    errNotInLayout: "Сервер відповідає, але ще не знає екрана «{0}». Відкрийте сторінку edgehop на комп'ютері з мишею: цей комп'ютер з'явиться там угорі з кнопками «Додати ліворуч» і «Додати праворуч».",
+    errSameName: "Ім'я «{0}» вже має сам сервер. Дайте цьому комп'ютеру інше ім'я.",
+    errVersion: "На сервері інша версія edgehop. Оновіть edgehop на обох комп'ютерах.",
+    clientNote: "Де який екран стоїть (ліворуч, праворуч, зверху, знизу), задається на комп'ютері з мишею. Цей комп'ютер там має називатись «{0}».",
+    pendingText: "«{0}» ({1}) хоче підключитись, але його ще немає в розкладці. Де він стоїть відносно цього комп'ютера?",
+    addLeft: "Додати ліворуч", addRight: "Додати праворуч",
+    leftCap: "← ліворуч", rightCap: "праворуч →",
+    above: "Екран над цим комп'ютером", below: "Екран під цим комп'ютером",
+    aboveBelowHint: "Необов'язково: ім'я комп'ютера, чий екран стоїть вище або нижче.",
     hotkeyNote: '{0} повертає курсор на цей комп\'ютер.',
     thisComputer: 'цей комп\'ютер', online: 'підключено', offlineState: 'не в мережі', cursor: 'курсор',
     setupTitle: 'Налаштування',
@@ -95,7 +106,18 @@ const TEXT = {
     noOthers: 'There are no other screens in the layout yet — add them below.',
     clientConnected: 'Connected to {0}. The cursor is on another computer.',
     clientActive: 'Connected to {0}. The cursor is here.',
-    clientWaiting: 'Waiting for the server {0}… Check the address, the key, and that edgehop is running on the server.',
+    clientWaiting: "Waiting for the server {0}…",
+    errUnreachable: "The server {0} does not answer. Check the address, that edgehop is running there, and that the server's firewall allows its port.",
+    errBadKey: "The server answers, but the key does not match. Copy the key from the edgehop page on the server.",
+    errNotInLayout: "The server answers, but it does not know the screen “{0}” yet. Open the edgehop page on the computer with the mouse: this computer shows up at the top there with “Add on the left” and “Add on the right” buttons.",
+    errSameName: "The name “{0}” is already used by the server itself. Give this computer a different name.",
+    errVersion: "The server runs a different edgehop version. Update edgehop on both computers.",
+    clientNote: "Where each screen stands (left, right, above, below) is set on the computer with the mouse. This computer must be called “{0}” there.",
+    pendingText: "“{0}” ({1}) wants to connect, but it is not in the layout yet. Where does it stand relative to this computer?",
+    addLeft: "Add on the left", addRight: "Add on the right",
+    leftCap: "← left", rightCap: "right →",
+    above: "Screen above this computer", below: "Screen below this computer",
+    aboveBelowHint: "Optional: the name of a computer whose screen stands above or below.",
     hotkeyNote: '{0} brings the cursor back to this computer.',
     thisComputer: 'this computer', online: 'connected', offlineState: 'offline', cursor: 'cursor',
     setupTitle: 'Settings',
@@ -270,6 +292,9 @@ function renderForm() {
   $('f-size').value = form.screenSize || '';
   $('f-size').placeholder = S.desktopW && S.desktopH ? S.desktopW + 'x' + S.desktopH : '1920x1080';
   $('row-add').placeholder = t('addPlaceholder');
+  $('f-above').value = form.above || '';
+  $('f-below').value = form.below || '';
+  $('client-note').textContent = role === 'client' && selfName() ? t('clientNote', selfName()) : '';
   if (role === 'server') renderRow();
 }
 
@@ -279,6 +304,7 @@ function renderRow() {
   if (self && !form.row.includes(self)) form.row.push(self);
   const row = $('row');
   row.replaceChildren();
+  row.append(el('span', { class: 'row-cap', text: t('leftCap') }));
   form.row.forEach((name, i) => {
     const isSelf = name === self;
     const chip = el('div', { class: 'chip' + (isSelf ? ' self' : '') },
@@ -289,8 +315,13 @@ function renderRow() {
       isSelf ? null : el('button', { type: 'button', title: t('remove'), 'aria-label': t('remove'), text: '×', onclick: () => removeScreen(i) }));
     row.append(chip);
   });
+  row.append(el('span', { class: 'row-cap', text: t('rightCap') }));
 
   const others = form.row.filter((n) => n !== self);
+  for (const extra of [form.above, form.below]) {
+    const name = (extra || '').trim();
+    if (name && name !== self && !others.includes(name)) others.push(name);
+  }
   show('screen-opts-wrap', others.length > 0);
   const opts = $('screen-opts');
   opts.replaceChildren();
@@ -426,6 +457,41 @@ function screenBox(s, focusName, running) {
     el('div', { class: 's-state', text: state }));
 }
 
+// Why a client is not connected, in words the user can act on.
+function clientProblem(st) {
+  const e = st.error || '';
+  if (e.includes('not in the server')) return t('errNotInLayout', st.name);
+  if (e.includes('does not match')) return t('errBadKey');
+  if (e.includes('already used by the server')) return t('errSameName', st.name);
+  if (e.includes('protocol version') || e.includes('incompatible edgehop version')) return t('errVersion');
+  if (e.includes('cannot reach')) return t('errUnreachable', st.server);
+  return t('clientWaiting', st.server);
+}
+
+// addPending puts a waiting computer at one end of the row and restarts.
+function addPending(name, atLeft) {
+  if (!form.row || form.row.length === 0) form.row = [selfName()];
+  if (!form.row.includes(name)) {
+    if (atLeft) form.row.unshift(name);
+    else form.row.push(name);
+  }
+  renderForm();
+  save(true);
+}
+
+function renderPending(st) {
+  const box = $('pending');
+  box.replaceChildren();
+  if (!st || st.role !== 'server' || !form || form.role !== 'server') return;
+  for (const p of st.pending || []) {
+    const where = [p.os, p.addr].filter(Boolean).join(', ');
+    box.append(el('div', { class: 'pending-item' },
+      el('span', { class: 'p-text', text: t('pendingText', p.name, where) }),
+      el('button', { type: 'button', class: 'small primary', text: t('addLeft'), onclick: () => addPending(p.name, true) }),
+      el('button', { type: 'button', class: 'small primary', text: t('addRight'), onclick: () => addPending(p.name, false) })));
+  }
+}
+
 function renderLive(force) {
   const eng = S.engine;
   const st = eng.status || null;
@@ -443,6 +509,7 @@ function renderLive(force) {
   screens.replaceChildren();
   hint.textContent = '';
   pill.className = 'pill';
+  renderPending(eng.running ? st : null);
 
   $('engine-exit').textContent = eng.exit ? t('stoppedBecause', eng.exit) : '';
   show('engine-exit', !eng.running && !!eng.exit);
@@ -473,7 +540,7 @@ function renderLive(force) {
   } else {
     pill.textContent = t(st.connected ? 'pillRunning' : 'pillWaiting');
     pill.classList.add(st.connected ? 'on' : 'wait');
-    line.textContent = !st.connected ? t('clientWaiting', st.server)
+    line.textContent = !st.connected ? clientProblem(st)
       : st.active ? t('clientActive', st.server) : t('clientConnected', st.server);
   }
 
@@ -598,12 +665,15 @@ function init() {
     const old = selfName();
     form.name = $('f-name').value;
     const now = selfName();
+    $('client-note').textContent = form.role === 'client' && now ? t('clientNote', now) : '';
     if (form.role === 'server') {
       form.row = (form.row || []).map((n) => (n === old ? now : n)).filter((n) => n !== '');
       renderRow();
     }
   });
   $('f-key').addEventListener('input', () => { form.key = $('f-key').value; });
+  $('f-above').addEventListener('change', () => { form.above = $('f-above').value.trim(); renderRow(); });
+  $('f-below').addEventListener('change', () => { form.below = $('f-below').value.trim(); renderRow(); });
   $('f-server').addEventListener('input', () => { form.server = $('f-server').value; });
   $('f-port').addEventListener('input', () => { form.port = parseInt($('f-port').value, 10) || 0; });
   $('f-hotkey').addEventListener('input', () => { form.releaseHotkey = $('f-hotkey').value; });

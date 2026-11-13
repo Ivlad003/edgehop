@@ -41,6 +41,7 @@
         </div>
       </div>
       <p class="status-line" id="status-line"></p>
+      <div class="pending" id="pending"></div>
       <p class="error" id="engine-exit" hidden></p>
       <div class="screens" id="screens"></div>
       <p class="hint" id="status-hint"></p>
@@ -74,6 +75,7 @@
             <input type="text" id="f-server" autocomplete="off" spellcheck="false" placeholder="192.168.1.10">
             <span class="hint" data-t="serverAddrHint"></span>
           </label>
+          <p class="note" id="client-note"></p>
         </div>
 
         <div class="field">
@@ -96,6 +98,18 @@
               <input type="text" id="row-add" autocomplete="off" spellcheck="false" maxlength="40">
               <button type="button" class="small" id="row-add-btn" data-t="addScreen"></button>
             </div>
+          </div>
+
+          <div class="field pair">
+            <label>
+              <span class="label" data-t="above"></span>
+              <input type="text" id="f-above" autocomplete="off" spellcheck="false" maxlength="40">
+            </label>
+            <label>
+              <span class="label" data-t="below"></span>
+              <input type="text" id="f-below" autocomplete="off" spellcheck="false" maxlength="40">
+            </label>
+            <span class="hint" data-t="aboveBelowHint"></span>
           </div>
 
           <div class="field" id="screen-opts-wrap" hidden>

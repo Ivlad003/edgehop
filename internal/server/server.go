@@ -117,6 +117,9 @@ type Server struct {
 	warnMu sync.Mutex
 	warned map[string]time.Time
 
+	unknownMu sync.Mutex
+	unknown   map[string]UnknownClient
+
 	// Everything below is owned by the run loop.
 	byName  map[string]*session
 	focus   *session // nil while the cursor is on the server itself
@@ -134,14 +137,15 @@ type Server struct {
 // New creates a server. Call Listen, then Serve.
 func New(cfg Config, capture input.Capture) *Server {
 	s := &Server{
-		cfg:    cfg,
-		cap:    capture,
-		ctl:    make(chan ctlMsg, 16),
-		done:   make(chan struct{}),
-		byID:   map[uint32]*session{},
-		warned: map[string]time.Time{},
-		byName: map[string]*session{},
-		held:   map[uint16]uint16{},
+		cfg:     cfg,
+		cap:     capture,
+		ctl:     make(chan ctlMsg, 16),
+		done:    make(chan struct{}),
+		byID:    map[uint32]*session{},
+		warned:  map[string]time.Time{},
+		unknown: map[string]UnknownClient{},
+		byName:  map[string]*session{},
+		held:    map[uint16]uint16{},
 	}
 	s.focusName.Store("")
 	return s
@@ -191,6 +195,35 @@ type ClientInfo struct {
 	Addr  string  `json:"addr"`
 	UDP   bool    `json:"udp"`   // cursor motion travels over UDP
 	RTTMs float64 `json:"rttMs"` // last measured round trip, milliseconds
+}
+
+// UnknownClient is a computer that has the right key but is not part of the
+// layout yet, so the server had to turn it away.
+type UnknownClient struct {
+	Name string `json:"name"`
+	OS   string `json:"os"`
+	Addr string `json:"addr"`
+	W    int    `json:"w"`
+	H    int    `json:"h"`
+	seen time.Time
+}
+
+// Unknown returns the computers that recently tried to connect with the
+// right key but are missing from the layout, sorted by name. Clients retry
+// every few seconds, so an entry disappears soon after its computer stops.
+func (s *Server) Unknown() []UnknownClient {
+	s.unknownMu.Lock()
+	defer s.unknownMu.Unlock()
+	out := []UnknownClient{}
+	for name, u := range s.unknown {
+		if time.Since(u.seen) > 15*time.Second {
+			delete(s.unknown, name)
+			continue
+		}
+		out = append(out, u)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Clients returns the connected clients, sorted by name.
@@ -364,6 +397,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		reject("this name is already used by the server; every computer needs its own `name`")
 		return
 	case !s.cfg.Layout.Has(hello.Name):
+		s.unknownMu.Lock()
+		s.unknown[hello.Name] = UnknownClient{Name: hello.Name, OS: hello.OS, Addr: host, W: int(hello.W), H: int(hello.H), seen: time.Now()}
+		s.unknownMu.Unlock()
 		reject(fmt.Sprintf("screen %q is not in the server's layout; add it to `row` in the server's config", hello.Name))
 		return
 	case hello.W < 100 || hello.H < 100 || hello.W > 100000 || hello.H > 100000:

@@ -268,3 +268,65 @@ func TestApplyClientAndInvalidSave(t *testing.T) {
 		t.Errorf("solo = %+v", solo)
 	}
 }
+
+func TestFormAboveBelow(t *testing.T) {
+	c, err := Parse(`
+role = "server"
+name = "desk"
+key = "k"
+row = ["desk", "mac"]
+
+[[links]]
+from = "tv"
+side = "bottom"
+to = "desk"
+
+[[links]]
+from = "mac"
+side = "right"
+to = "far"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := c.Form()
+	if f.Above != "tv" || f.Below != "" {
+		t.Fatalf("above=%q below=%q, want tv and nothing", f.Above, f.Below)
+	}
+	// Replace the screen above, add one below, give the lower one options.
+	f.Above = "projector"
+	f.Below = " pad "
+	f.Screens["pad"] = FormScreen{Scale: 2}
+	c.Apply(f)
+	path := filepath.Join(t.TempDir(), "edgehop.toml")
+	if err := Save(path, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := got.Layout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Neighbor("desk", layout.Top) != "projector" || l.Neighbor("projector", layout.Bottom) != "desk" {
+		t.Errorf("screen above:\n%s", l.Describe())
+	}
+	if l.Neighbor("desk", layout.Bottom) != "pad" || l.Has("tv") {
+		t.Errorf("screen below / old link:\n%s", l.Describe())
+	}
+	if l.Neighbor("mac", layout.Right) != "far" {
+		t.Errorf("an unrelated link was lost:\n%s", l.Describe())
+	}
+	if got.Screens["pad"].Scale != 2 {
+		t.Errorf("options of the screen below were dropped: %+v", got.Screens)
+	}
+	// Clearing both removes the links again.
+	f = got.Form()
+	f.Above, f.Below = "", ""
+	got.Apply(f)
+	if len(got.Links) != 1 || got.Links[0].To != "far" {
+		t.Errorf("links after clearing = %+v", got.Links)
+	}
+}

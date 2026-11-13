@@ -503,3 +503,48 @@ func TestMotionLatency(t *testing.T) {
 		t.Errorf("median latency %v is too high", p50)
 	}
 }
+
+// A computer with the right key that is missing from the layout is turned
+// away, but both sides must learn why: the server lists it as waiting, and
+// the client knows the reason.
+func TestUnknownClientIsReportedOnBothSides(t *testing.T) {
+	r := startServer(t, "desk", []string{"desk", "mac"}, nil)
+	inj := &fakeInjector{w: 800, h: 600}
+	c := client.New(client.Config{Name: "newpc", Server: r.srv.Addr().String(), Key: r.key}, inj)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	eventually(t, "the server to list the waiting computer", func() bool {
+		u := r.srv.Unknown()
+		return len(u) == 1 && u[0].Name == "newpc" && u[0].W == 800 && u[0].Addr != ""
+	})
+	eventually(t, "the client to know why it was refused", func() bool {
+		return strings.Contains(c.LastError(), "not in the server's layout")
+	})
+	if c.Connected() {
+		t.Fatal("a computer outside the layout must not be connected")
+	}
+
+	// A wrong key is a different reason, and such a computer is not listed.
+	bad := client.New(client.Config{Name: "intruder", Server: r.srv.Addr().String(), Key: "wrong"}, &fakeInjector{w: 800, h: 600})
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	done2 := make(chan struct{})
+	go func() { bad.Run(ctx2); close(done2) }()
+	t.Cleanup(func() { cancel2(); <-done2 })
+	eventually(t, "the wrong-key reason", func() bool { return strings.Contains(bad.LastError(), "does not match") })
+	for _, u := range r.srv.Unknown() {
+		if u.Name == "intruder" {
+			t.Fatal("a computer with the wrong key must not be offered for adding")
+		}
+	}
+
+	// Once connected, the error is cleared.
+	mac := client.New(client.Config{Name: "mac", Server: r.srv.Addr().String(), Key: r.key}, &fakeInjector{w: 800, h: 600})
+	ctx3, cancel3 := context.WithCancel(context.Background())
+	done3 := make(chan struct{})
+	go func() { mac.Run(ctx3); close(done3) }()
+	t.Cleanup(func() { cancel3(); <-done3 })
+	eventually(t, "mac to connect", func() bool { return mac.Connected() && mac.LastError() == "" })
+}

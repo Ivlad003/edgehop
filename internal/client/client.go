@@ -42,6 +42,7 @@ type Client struct {
 
 	connected atomic.Bool
 	active    atomic.Bool
+	lastErr   atomic.Value // string: why the last connection attempt failed
 }
 
 // New creates a client.
@@ -51,6 +52,13 @@ func New(cfg Config, inj input.Injector) *Client {
 
 // Connected reports whether the client currently has a session with the server.
 func (c *Client) Connected() bool { return c.connected.Load() }
+
+// LastError returns why the client is not connected, or "" while it is
+// connected (or has not tried yet).
+func (c *Client) LastError() string {
+	s, _ := c.lastErr.Load().(string)
+	return s
+}
 
 // Active reports whether the cursor is currently on this computer.
 func (c *Client) Active() bool { return c.active.Load() }
@@ -73,6 +81,7 @@ func (c *Client) Run(ctx context.Context) error {
 			delay = retryMin
 			lastMsg = ""
 		}
+		c.lastErr.Store(err.Error())
 		if msg := err.Error(); msg != lastMsg {
 			logx.Infof("%v - will keep retrying", err)
 			lastMsg = msg
@@ -159,6 +168,7 @@ func (c *Client) session(ctx context.Context) error {
 	}
 	logx.Infof("connected to %q at %s as %q, screen %dx%d", welcome.Name, c.cfg.Server, c.cfg.Name, w, h)
 	c.connected.Store(true)
+	c.lastErr.Store("")
 	defer func() {
 		c.connected.Store(false)
 		c.active.Store(false)

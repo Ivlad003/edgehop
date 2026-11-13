@@ -247,8 +247,39 @@ code.cmd { display: block; flex: 1 1 320px; padding: 8px 10px; }
 }
 .log:empty::before { content: "—"; color: var(--muted); }
 
+/* Computers that knock on the door but are not in the layout yet. */
+.pending:empty { display: none; }
+.pending { display: grid; gap: 8px; margin-top: 12px; }
+.pending-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn);
+}
+.pending-item .p-text { flex: 1 1 260px; }
+
+.note {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  font-size: 14px;
+}
+.note:empty { display: none; }
+
+.row-cap { align-self: center; color: var(--muted); font-size: 13px; white-space: nowrap; }
+
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
+.pair .hint { grid-column: 1 / -1; }
+.pair input { max-width: none; }
+
 @media (max-width: 560px) {
   .roles { grid-template-columns: 1fr; }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: 8px; }
+  .pair { grid-template-columns: 1fr; }
 }

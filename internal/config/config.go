@@ -363,7 +363,9 @@ type Form struct {
 	Name          string                `json:"name"`
 	Key           string                `json:"key"`
 	Port          int                   `json:"port"`
-	Row           []string              `json:"row"`
+	Row           []string              `json:"row"`   // screens from left to right
+	Above         string                `json:"above"` // the screen above this computer, if any
+	Below         string                `json:"below"` // the screen below this computer, if any
 	Server        string                `json:"server"`
 	ReleaseHotkey string                `json:"releaseHotkey"`
 	HideCursor    bool                  `json:"hideCursor"`
@@ -406,6 +408,10 @@ func (c *Config) Form() Form {
 	if c.ReleaseHotkey != nil {
 		f.ReleaseHotkey = *c.ReleaseHotkey
 	}
+	if lay, err := c.Layout(); err == nil {
+		f.Above = lay.Neighbor(c.Name, layout.Top)
+		f.Below = lay.Neighbor(c.Name, layout.Bottom)
+	}
 	for name, s := range c.Screens {
 		scale := s.Scale
 		if scale == 0 {
@@ -442,6 +448,26 @@ func (c *Config) Apply(f Form) {
 		if n = strings.TrimSpace(n); n != "" {
 			c.Row = append(c.Row, n)
 		}
+	}
+	// The screens above and below this computer are kept as links. Replace
+	// whatever linked this computer vertically before; other links stay.
+	vertical := func(side string) bool {
+		s, err := layout.ParseSide(side)
+		return err == nil && (s == layout.Top || s == layout.Bottom)
+	}
+	kept := c.Links[:0:0]
+	for _, l := range c.Links {
+		if vertical(l.Side) && (l.From == c.Name || l.To == c.Name) {
+			continue
+		}
+		kept = append(kept, l)
+	}
+	c.Links = kept
+	if above := strings.TrimSpace(f.Above); above != "" && above != c.Name {
+		c.Links = append(c.Links, Link{From: c.Name, Side: "top", To: above})
+	}
+	if below := strings.TrimSpace(f.Below); below != "" && below != c.Name {
+		c.Links = append(c.Links, Link{From: c.Name, Side: "bottom", To: below})
 	}
 	if len(c.Row) == 1 && c.Row[0] == c.Name {
 		c.Row = nil // a server on its own needs no row

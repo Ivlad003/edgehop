@@ -289,6 +289,8 @@ type serverStatus struct {
 	Focus   string         `json:"focus"` // "" while the cursor is on this computer
 	Hotkey  string         `json:"hotkey,omitempty"`
 	Screens []screenStatus `json:"screens"`
+	// Pending are computers that have the right key but are not in the layout.
+	Pending []server.UnknownClient `json:"pending"`
 }
 
 type clientStatus struct {
@@ -296,7 +298,8 @@ type clientStatus struct {
 	Name      string `json:"name"`
 	Server    string `json:"server"`
 	Connected bool   `json:"connected"`
-	Active    bool   `json:"active"` // the cursor is on this computer
+	Active    bool   `json:"active"`          // the cursor is on this computer
+	Error     string `json:"error,omitempty"` // why it is not connected
 }
 
 // screenOrder lists the layout's screens: the row first, then the rest.
@@ -360,7 +363,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	}
 	if child {
 		go reportStatus(ctx, func() any {
-			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus()}
+			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus(), Pending: srv.Unknown()}
 			if hotkey.Key != 0 {
 				st.Hotkey = hotkeyText(cfg)
 			}
@@ -411,7 +414,7 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	if child {
 		go reportStatus(ctx, func() any {
 			return clientStatus{Role: "client", Name: cfg.Name, Server: cfg.Server,
-				Connected: c.Connected(), Active: c.Active()}
+				Connected: c.Connected(), Active: c.Active(), Error: c.LastError()}
 		})
 	}
 	return c.Run(ctx)
