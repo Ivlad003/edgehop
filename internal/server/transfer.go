@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Ivlad003/edgehop/internal/clip"
 	"github.com/Ivlad003/edgehop/internal/logx"
@@ -134,7 +135,14 @@ func (h *clipHub) fromServer(to string) {
 	if dest == nil || dest.caps&proto.CapClipboard == 0 {
 		return
 	}
+	// A client opens its data connection right after it connected. If the
+	// cursor went over in that very moment, wait for it rather than drop
+	// what was copied.
 	ch := dest.data.Load()
+	for i := 0; ch == nil && i < 60 && !dest.closed.Load(); i++ {
+		time.Sleep(50 * time.Millisecond)
+		ch = dest.data.Load()
+	}
 	if ch == nil {
 		return
 	}
