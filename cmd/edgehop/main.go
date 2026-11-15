@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -228,11 +231,23 @@ func cmdRun(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	cmds := make(chan childCommand, 8)
 	if *child {
-		// The settings page holds our stdin open; when it closes the pipe -
-		// or disappears - shut down cleanly.
+		// The settings page holds our stdin open and sends commands on it,
+		// one JSON object per line. When it closes the pipe - or disappears -
+		// shut down cleanly.
 		go func() {
-			io.Copy(io.Discard, os.Stdin)
+			sc := bufio.NewScanner(os.Stdin)
+			sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+			for sc.Scan() {
+				var cmd childCommand
+				if json.Unmarshal(sc.Bytes(), &cmd) == nil && cmd.Cmd != "" {
+					select {
+					case cmds <- cmd:
+					default:
+					}
+				}
+			}
 			stop()
 		}()
 	}
@@ -250,9 +265,9 @@ func cmdRun(args []string) error {
 	}
 	logx.Infof("edgehop %s, settings %s", version, *path)
 	if cfg.Role == "server" {
-		return runServer(ctx, cfg, opts, *noInput, *child)
+		return runServer(ctx, cfg, opts, *noInput, *child, cmds)
 	}
-	return runClient(ctx, cfg, opts, *noInput, *child)
+	return runClient(ctx, cfg, opts, *noInput, *child, cmds)
 }
 
 // openClipboard returns the system clipboard to share, or nil when sharing
@@ -304,6 +319,7 @@ type screenStatus struct {
 	W         int     `json:"w,omitempty"`
 	H         int     `json:"h,omitempty"`
 	UDP       bool    `json:"udp,omitempty"`
+	Files     bool    `json:"files,omitempty"` // files can be sent to it
 	RTTMs     float64 `json:"rttMs,omitempty"`
 }
 
@@ -316,8 +332,9 @@ type serverStatus struct {
 	Screens []screenStatus `json:"screens"`
 	// Pending are computers that have the right key but are not in the layout.
 	Pending []server.UnknownClient `json:"pending"`
-	// Clipboard describes the last clipboard transfer, if any.
+	// Clipboard describes the last transfer (clipboard or files), if any.
 	Clipboard string `json:"clipboard,omitempty"`
+	sendStatus
 }
 
 type clientStatus struct {
@@ -328,6 +345,77 @@ type clientStatus struct {
 	Active    bool   `json:"active"`          // the cursor is on this computer
 	Error     string `json:"error,omitempty"` // why it is not connected
 	Clipboard string `json:"clipboard,omitempty"`
+	// ServerName is the server's screen name; Files tells whether files can
+	// be sent to it.
+	ServerName string `json:"serverName,omitempty"`
+	Files      bool   `json:"files,omitempty"`
+	sendStatus
+}
+
+// childCommand is a request from the settings page to the running engine.
+type childCommand struct {
+	Cmd string `json:"cmd"` // "send"
+	To  string `json:"to"`  // the screen to send to
+	Dir string `json:"dir"` // a folder whose content is sent, then removed
+}
+
+// sendStatus is the part of the status about files sent on request.
+type sendStatus struct {
+	Sending   string `json:"sending,omitempty"`   // what is being sent right now
+	SendError string `json:"sendError,omitempty"` // why the last attempt failed
+	SendDone  uint64 `json:"sendDone,omitempty"`  // how many send requests are finished
+	Downloads string `json:"downloads,omitempty"` // where received files are saved
+}
+
+// sender carries out "send" commands one after the other and remembers how
+// the last one went.
+type sender struct {
+	sending   atomic.Value // string
+	sendError atomic.Value // string
+	done      atomic.Uint64
+	downloads string
+}
+
+func (s *sender) status() sendStatus {
+	a, _ := s.sending.Load().(string)
+	b, _ := s.sendError.Load().(string)
+	return sendStatus{Sending: a, SendError: b, SendDone: s.done.Load(), Downloads: s.downloads}
+}
+
+// run executes commands until ctx ends. send transfers the given paths to
+// the named screen.
+func (s *sender) run(ctx context.Context, cmds <-chan childCommand, send func(to string, paths []string) error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case cmd := <-cmds:
+			if cmd.Cmd != "send" || cmd.Dir == "" {
+				continue
+			}
+			entries, err := os.ReadDir(cmd.Dir)
+			var paths []string
+			for _, e := range entries {
+				paths = append(paths, filepath.Join(cmd.Dir, e.Name()))
+			}
+			sort.Strings(paths)
+			if err == nil && len(paths) == 0 {
+				err = errors.New("no files to send")
+			}
+			if err == nil {
+				s.sendError.Store("")
+				s.sending.Store(fmt.Sprintf("%d item(s) to %s", len(paths), cmd.To))
+				err = send(cmd.To, paths)
+				s.sending.Store("")
+			}
+			if err != nil {
+				s.sendError.Store(err.Error())
+				logx.Warnf("files: sending to %s failed: %v", cmd.To, err)
+			}
+			os.RemoveAll(cmd.Dir) // the copy made for sending is no longer needed
+			s.done.Add(1)
+		}
+	}
 }
 
 // screenOrder lists the layout's screens: the row first, then the rest.
@@ -343,7 +431,7 @@ func screenOrder(cfg *config.Config, lay *layout.Layout) []string {
 	return out
 }
 
-func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noInput, child bool) error {
+func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noInput, child bool, cmds <-chan childCommand) error {
 	lay, err := cfg.Layout()
 	if err != nil {
 		return err
@@ -374,7 +462,11 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 		Name: cfg.Name, Listen: cfg.Listen, Key: cfg.Key,
 		Layout: lay, Screens: screens, Hotkey: hotkey, AutoScale: true,
 		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
+		DropDir: cfg.DownloadDir(),
 	}, capture)
+	files := &sender{downloads: cfg.DownloadDir()}
+	go files.run(ctx, cmds, srv.SendFiles)
+	logx.Infof("files sent to this computer are saved in %s", cfg.DownloadDir())
 	if err := srv.Listen(); err != nil {
 		return err
 	}
@@ -393,7 +485,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	}
 	if child {
 		go reportStatus(ctx, func() any {
-			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus(), Pending: srv.Unknown(), Clipboard: srv.ClipboardStatus()}
+			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus(), Pending: srv.Unknown(), Clipboard: srv.ClipboardStatus(), sendStatus: files.status()}
 			if hotkey.Key != 0 {
 				st.Hotkey = hotkeyText(cfg)
 			}
@@ -405,6 +497,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 				s := screenStatus{Name: n, Self: n == cfg.Name}
 				if c, ok := clients[n]; ok {
 					s.Connected, s.OS, s.W, s.H, s.UDP, s.RTTMs = true, c.OS, c.W, c.H, c.UDP, c.RTTMs
+					s.Files = c.Files
 				}
 				st.Screens = append(st.Screens, s)
 			}
@@ -424,7 +517,7 @@ func hotkeyText(cfg *config.Config) string {
 	return config.DefaultHotkey
 }
 
-func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noInput, child bool) error {
+func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noInput, child bool, cmds <-chan childCommand) error {
 	var inj input.Injector
 	var err error
 	if noInput {
@@ -444,11 +537,16 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	c := client.New(client.Config{
 		Name: cfg.Name, Server: cfg.Server, Key: cfg.Key,
 		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
+		DropDir: cfg.DownloadDir(),
 	}, inj)
+	files := &sender{downloads: cfg.DownloadDir()}
+	go files.run(ctx, cmds, func(_ string, paths []string) error { return c.SendFiles(paths) })
+	logx.Infof("files sent to this computer are saved in %s", cfg.DownloadDir())
 	if child {
 		go reportStatus(ctx, func() any {
 			return clientStatus{Role: "client", Name: cfg.Name, Server: cfg.Server,
-				Connected: c.Connected(), Active: c.Active(), Error: c.LastError(), Clipboard: c.ClipboardStatus()}
+				Connected: c.Connected(), Active: c.Active(), Error: c.LastError(), Clipboard: c.ClipboardStatus(),
+				ServerName: c.ServerName(), Files: c.CanSendFiles(), sendStatus: files.status()}
 		})
 	}
 	return c.Run(ctx)

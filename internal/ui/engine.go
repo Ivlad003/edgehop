@@ -23,7 +23,7 @@ type engine struct {
 
 	mu       sync.Mutex
 	cmd      *exec.Cmd
-	stdin    io.Closer
+	stdin    io.WriteCloser
 	done     chan struct{}
 	running  bool
 	stopping bool
@@ -123,6 +123,22 @@ func (e *engine) start(configPath string) error {
 		close(done)
 	}()
 	return nil
+}
+
+// command sends a request to the running engine, as one JSON line on its
+// standard input.
+func (e *engine) command(v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.running || e.stdin == nil {
+		return errors.New("edgehop is not running - start it first")
+	}
+	_, err = e.stdin.Write(append(data, '\n'))
+	return err
 }
 
 // stop asks the engine to shut down cleanly (it watches its stdin) and kills

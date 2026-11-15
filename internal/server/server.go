@@ -68,6 +68,10 @@ type Config struct {
 	Clipboard clip.Clipboard
 	ClipDir   string
 	ClipLimit int64
+
+	// DropDir is where files that another computer sends to this one are
+	// saved. Empty means this computer does not accept sent files.
+	DropDir string
 }
 
 // autoScale returns how much faster the cursor should move on a client whose
@@ -160,7 +164,7 @@ type Server struct {
 	held    map[uint16]uint16 // physical key -> key sent to the focused screen
 
 	focusName atomic.Value // string, for Focus()
-	clip      *clipHub     // nil when the clipboard is not shared
+	clip      *clipHub     // clipboard and file transfers
 }
 
 // New creates a server. Call Listen, then Serve.
@@ -177,9 +181,7 @@ func New(cfg Config, capture input.Capture) *Server {
 		held:    map[uint16]uint16{},
 	}
 	s.focusName.Store("")
-	if cfg.Clipboard != nil {
-		s.clip = newClipHub(s)
-	}
+	s.clip = newClipHub(s)
 	return s
 }
 
@@ -226,6 +228,7 @@ type ClientInfo struct {
 	H     int     `json:"h"`
 	Addr  string  `json:"addr"`
 	UDP   bool    `json:"udp"`   // cursor motion travels over UDP
+	Files bool    `json:"files"` // files can be sent to it
 	RTTMs float64 `json:"rttMs"` // last measured round trip, milliseconds
 }
 
@@ -268,6 +271,7 @@ func (s *Server) Clients() []ClientInfo {
 		out = append(out, ClientInfo{
 			Name: sess.name, OS: sess.os, W: sess.w, H: sess.h, Addr: host,
 			UDP:   sess.udp.Load() != nil,
+			Files: sess.caps&proto.CapDrop != 0 && sess.data.Load() != nil,
 			RTTMs: math.Round(float64(sess.rtt.Load())/1e4) / 100,
 		})
 	}
@@ -486,8 +490,11 @@ func (s *Server) handleConn(conn net.Conn) {
 	}()
 
 	var caps uint32
-	if s.clip != nil {
+	if s.cfg.Clipboard != nil {
 		caps |= proto.CapClipboard
+	}
+	if s.cfg.DropDir != "" {
+		caps |= proto.CapDrop
 	}
 	if err := ch.Send(proto.AppendWelcome(nil, sess.id, s.cfg.Name, caps)); err != nil {
 		return
@@ -905,6 +912,12 @@ func (s *Server) sessionNamed(name string) *session {
 	return nil
 }
 
+// SendFiles sends files to a connected client, which saves them in its
+// folder for received files. It blocks until the transfer is over.
+func (s *Server) SendFiles(to string, paths []string) error {
+	return s.clip.sendFiles(to, paths)
+}
+
 // ClipboardStatus describes the last clipboard transfer, "" if there was none.
 func (s *Server) ClipboardStatus() string {
 	if s.clip == nil {
@@ -931,7 +944,7 @@ func (s *Server) handleData(ch *secure.Channel, sessionID uint32) {
 	s.idMu.RLock()
 	sess := s.byID[sessionID]
 	s.idMu.RUnlock()
-	if sess == nil || s.clip == nil || sess.caps&proto.CapClipboard == 0 {
+	if sess == nil || sess.caps&(proto.CapClipboard|proto.CapDrop) == 0 {
 		return
 	}
 	if old := sess.data.Swap(ch); old != nil {

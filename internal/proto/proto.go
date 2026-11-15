@@ -38,6 +38,7 @@ const (
 // the other side announced, so different versions keep working together.
 const (
 	CapClipboard = 1 << 0 // shared clipboard over a separate data connection
+	CapDrop      = 1 << 1 // accepts files sent on purpose, over the data connection
 )
 
 // Msg is a decoded message. Only the fields of its Type are meaningful.

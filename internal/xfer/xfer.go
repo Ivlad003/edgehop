@@ -1,5 +1,5 @@
-// Package xfer carries clipboard content - text or files - from one computer
-// to another as a sequence of frames:
+// Package xfer carries content from one computer to another as a sequence of
+// frames: clipboard text, clipboard files, or files sent on purpose ("drops").
 //
 //	Bundle   what is coming: kind, number of items, total size
 //	File     one item: a file (followed by its Chunks) or a folder
@@ -7,7 +7,8 @@
 //	End      the bundle is complete, or was aborted
 //
 // Every frame starts with a type byte and the bundle id, so a relay can
-// route frames without understanding them.
+// route frames without understanding them, and several bundles can be on
+// their way over one connection at the same time.
 package xfer
 
 import (
@@ -29,6 +30,13 @@ const (
 	FFile   = 0x21
 	FChunk  = 0x22
 	FEnd    = 0x23
+)
+
+// Bundle kinds on the wire. The first two equal clip.Text and clip.Files.
+const (
+	kindText  = 1
+	kindFiles = 2
+	kindDrop  = 3 // files sent on purpose: saved to a folder, not put on a clipboard
 )
 
 const (
@@ -83,6 +91,22 @@ func ID(frame []byte) (uint32, bool) {
 // IsEnd reports whether the frame closes its bundle.
 func IsEnd(frame []byte) bool { return len(frame) >= 5 && frame[0] == FEnd }
 
+// EndOK reports whether an End frame closes its bundle successfully.
+func EndOK(frame []byte) bool { return IsEnd(frame) && len(frame) > 5 && frame[5] == statusOK }
+
+// DropDest reports whether the frame opens a drop bundle and, if so, which
+// screen it is addressed to ("" means the computer at the other end).
+func DropDest(frame []byte) (dest string, isDrop bool) {
+	if len(frame) < 18 || frame[0] != FBundle || frame[5] != kindDrop {
+		return "", false
+	}
+	rest := frame[18:]
+	if len(rest) >= 1 && len(rest) >= 1+int(rest[0]) {
+		dest = string(rest[1 : 1+int(rest[0])])
+	}
+	return dest, true
+}
+
 func header(typ byte, id uint32) []byte {
 	b := make([]byte, 5, 64)
 	b[0] = typ
@@ -116,7 +140,7 @@ func manifest(paths []string) ([]item, int64, error) {
 		if !info.IsDir() && !info.Mode().IsRegular() {
 			continue // links, devices ...
 		}
-		// Two copied items may share a name when they come from different folders.
+		// Two items may share a name when they come from different folders.
 		name, base := filepath.Base(top), filepath.Base(top)
 		for n := 2; used[strings.ToLower(name)]; n++ {
 			ext := filepath.Ext(base)
@@ -157,34 +181,56 @@ func manifest(paths []string) ([]item, int64, error) {
 	return items, total, nil
 }
 
-// Send streams the content as frames through send. Nothing is sent when the
-// content is larger than limit (ErrTooLarge).
+// Send streams clipboard content as frames through send. Nothing is sent
+// when the content is larger than limit (ErrTooLarge).
 func Send(send func([]byte) error, id uint32, c clip.Content, limit int64) (Stats, error) {
-	st := Stats{Kind: c.Kind}
-	var items []item
 	switch c.Kind {
 	case clip.Text:
-		st.Bytes = int64(len(c.Text))
-		items = []item{{size: st.Bytes}}
+		return stream(send, id, kindText, "", c.Text, nil, limit)
 	case clip.Files:
+		return stream(send, id, kindFiles, "", "", c.Files, limit)
+	}
+	return Stats{Kind: c.Kind}, errors.New("nothing to send")
+}
+
+// SendDrop streams files that the user sends on purpose. dest names the
+// screen they are meant for; "" means the computer at the other end of the
+// connection. There is no size limit: the user chose these files.
+func SendDrop(send func([]byte) error, id uint32, paths []string, dest string) (Stats, error) {
+	return stream(send, id, kindDrop, dest, "", paths, 0)
+}
+
+func stream(send func([]byte) error, id uint32, kind byte, dest, text string, paths []string, limit int64) (Stats, error) {
+	st := Stats{Kind: clip.Files}
+	var items []item
+	if kind == kindText {
+		st.Kind = clip.Text
+		st.Bytes = int64(len(text))
+		items = []item{{size: st.Bytes}}
+	} else {
 		var err error
-		if items, st.Bytes, err = manifest(c.Files); err != nil {
+		if items, st.Bytes, err = manifest(paths); err != nil {
 			return st, err
 		}
 		st.Files = len(items)
 		if len(items) == 0 {
 			return st, errors.New("nothing to send")
 		}
-	default:
-		return st, errors.New("nothing to send")
 	}
 	if limit > 0 && st.Bytes > limit {
 		return st, ErrTooLarge
 	}
+	if len(dest) > 255 {
+		return st, errors.New("destination name too long")
+	}
 
-	b := append(header(FBundle, id), byte(c.Kind))
+	b := append(header(FBundle, id), kind)
 	b = be.AppendUint32(b, uint32(len(items)))
 	b = be.AppendUint64(b, uint64(st.Bytes))
+	if kind == kindDrop {
+		b = append(b, byte(len(dest)))
+		b = append(b, dest...)
+	}
 	if err := send(b); err != nil {
 		return st, err
 	}
@@ -196,6 +242,9 @@ func Send(send func([]byte) error, id uint32, c clip.Content, limit int64) (Stat
 	buf[0] = FChunk
 	be.PutUint32(buf[1:], id)
 	for _, it := range items {
+		if len(it.rel) > 4096 {
+			return fail(fmt.Errorf("path too long: %s", it.rel))
+		}
 		f := header(FFile, id)
 		flags := byte(0)
 		if it.dir {
@@ -205,9 +254,6 @@ func Send(send func([]byte) error, id uint32, c clip.Content, limit int64) (Stat
 		f = be.AppendUint64(f, uint64(it.size))
 		f = be.AppendUint16(f, uint16(len(it.rel)))
 		f = append(f, it.rel...)
-		if len(it.rel) > 4096 {
-			return fail(fmt.Errorf("path too long: %s", it.rel))
-		}
 		if err := send(f); err != nil {
 			return st, err
 		}
@@ -216,8 +262,8 @@ func Send(send func([]byte) error, id uint32, c clip.Content, limit int64) (Stat
 		}
 		var src io.Reader
 		var file *os.File
-		if c.Kind == clip.Text {
-			src = strings.NewReader(c.Text)
+		if kind == kindText {
+			src = strings.NewReader(text)
 		} else {
 			var err error
 			if file, err = os.Open(it.src); err != nil {
@@ -268,21 +314,27 @@ type Result struct {
 	ID      uint32
 	Content clip.Content
 	Stats   Stats
+	// Drop is set for files that were sent on purpose: they are already in
+	// their final place (Content.Files) and do not belong on the clipboard.
+	Drop bool
 }
 
-// Receiver assembles the frames of incoming bundles. Files are written below
-// Dir, each bundle into its own folder; the folders of earlier bundles are
-// removed when a new one starts.
+// Receiver assembles the frames of incoming bundles.
+//
+// Clipboard files are written below Dir, each bundle into its own folder;
+// the folders of earlier bundles are removed when a new one starts. Dropped
+// files end up directly in DropDir and are never removed.
 type Receiver struct {
-	Dir   string
-	Limit int64 // 0 = no limit
+	Dir     string
+	DropDir string // "" = drops are refused
+	Limit   int64  // largest clipboard content; 0 = no limit
 
-	cur *incoming
+	active map[uint32]*incoming
 }
 
 type incoming struct {
 	id      uint32
-	kind    clip.Kind
+	kind    byte
 	total   int64
 	got     int64
 	items   int
@@ -295,10 +347,10 @@ type incoming struct {
 	topSeen map[string]bool
 }
 
-// cleanRel turns a path from the wire into a safe relative path for this
-// system. The sender is another computer: never let it pick a location
-// outside the bundle folder.
-func cleanRel(rel string) (string, error) {
+// CleanRel turns a path from another computer into a safe relative path
+// (with forward slashes) for this system. Never let the other side pick a
+// location outside the folder the content is meant for.
+func CleanRel(rel string) (string, error) {
 	if rel == "" || strings.ContainsRune(rel, 0) || strings.HasPrefix(rel, "/") {
 		return "", fmt.Errorf("invalid path %q", rel)
 	}
@@ -341,12 +393,12 @@ func isBundleDir(name string) bool {
 	return true
 }
 
-func (r *Receiver) abort() {
-	in := r.cur
-	r.cur = nil
+func (r *Receiver) drop(id uint32) {
+	in := r.active[id]
 	if in == nil {
 		return
 	}
+	delete(r.active, id)
 	if in.file != nil {
 		in.file.Close()
 	}
@@ -355,8 +407,38 @@ func (r *Receiver) abort() {
 	}
 }
 
-// Abort drops a half-received bundle, for example when the connection is lost.
-func (r *Receiver) Abort() { r.abort() }
+// Cancel drops one half-received bundle.
+func (r *Receiver) Cancel(id uint32) { r.drop(id) }
+
+// Abort drops every half-received bundle, for example when the connection
+// is lost.
+func (r *Receiver) Abort() {
+	for id := range r.active {
+		r.drop(id)
+	}
+}
+
+// place moves a received item into dir under a name that is still free.
+func place(src, dir string) (string, error) {
+	base := filepath.Base(src)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	for n := 1; n < 10000; n++ {
+		name := base
+		if n > 1 {
+			name = fmt.Sprintf("%s (%d)%s", stem, n, ext)
+		}
+		dst := filepath.Join(dir, name)
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return "", err
+		}
+		return dst, nil
+	}
+	return "", fmt.Errorf("no free name for %s", base)
+}
 
 // Frame feeds one frame. It returns the bundle's content once its End frame
 // has arrived, and nil while the bundle is still incomplete.
@@ -367,45 +449,62 @@ func (r *Receiver) Frame(b []byte) (*Result, error) {
 	}
 	body := b[5:]
 	fail := func(format string, args ...any) (*Result, error) {
-		r.abort()
+		r.drop(id)
 		return nil, fmt.Errorf("xfer: "+format, args...)
 	}
 	if b[0] == FBundle {
-		r.abort() // a new bundle replaces an unfinished one
+		r.drop(id) // a bundle that starts again replaces its unfinished self
 		if len(body) < 13 {
 			return fail("short bundle header")
 		}
-		in := &incoming{id: id, kind: clip.Kind(body[0]), items: int(be.Uint32(body[1:])), total: int64(be.Uint64(body[5:])), topSeen: map[string]bool{}}
-		if in.kind != clip.Text && in.kind != clip.Files {
+		in := &incoming{id: id, kind: body[0], items: int(be.Uint32(body[1:])), total: int64(be.Uint64(body[5:])), topSeen: map[string]bool{}}
+		if in.kind != kindText && in.kind != kindFiles && in.kind != kindDrop {
 			return fail("unknown content kind %d", in.kind)
 		}
-		if in.total < 0 || (r.Limit > 0 && in.total > r.Limit) {
+		if in.total < 0 || (in.kind != kindDrop && r.Limit > 0 && in.total > r.Limit) {
 			return nil, ErrTooLarge
 		}
-		if in.items <= 0 || in.items > maxItems || (in.kind == clip.Text && in.items != 1) {
+		if in.items <= 0 || in.items > maxItems || (in.kind == kindText && in.items != 1) {
 			return fail("invalid item count %d", in.items)
 		}
-		if in.kind == clip.Files {
+		switch in.kind {
+		case kindFiles:
 			// Make room: earlier bundles are no longer on any clipboard. Only
-			// folders this package created (eight hex digits) are removed.
+			// folders this package created (eight hex digits) are removed,
+			// and never those of bundles still on their way.
+			busy := map[string]bool{}
+			for _, other := range r.active {
+				busy[filepath.Base(other.root)] = true
+			}
 			if entries, err := os.ReadDir(r.Dir); err == nil {
 				for _, e := range entries {
-					if isBundleDir(e.Name()) {
+					if isBundleDir(e.Name()) && !busy[e.Name()] {
 						os.RemoveAll(filepath.Join(r.Dir, e.Name()))
 					}
 				}
 			}
 			in.root = filepath.Join(r.Dir, fmt.Sprintf("%08x", id))
+		case kindDrop:
+			if r.DropDir == "" {
+				return fail("this computer does not accept sent files")
+			}
+			in.root = filepath.Join(r.DropDir, fmt.Sprintf(".edgehop-incoming-%08x", id))
+			os.RemoveAll(in.root)
+		}
+		if in.root != "" {
 			if err := os.MkdirAll(in.root, 0o755); err != nil {
 				return fail("%v", err)
 			}
 		}
-		r.cur = in
+		if r.active == nil {
+			r.active = map[uint32]*incoming{}
+		}
+		r.active[id] = in
 		return nil, nil
 	}
 
-	in := r.cur
-	if in == nil || in.id != id {
+	in := r.active[id]
+	if in == nil {
 		return nil, nil // frames of a bundle that was refused or aborted
 	}
 	switch b[0] {
@@ -425,12 +524,12 @@ func (r *Receiver) Frame(b []byte) (*Result, error) {
 		if in.seen > in.items || size < 0 || in.got+size > in.total {
 			return fail("more data than announced")
 		}
-		if in.kind == clip.Text {
+		if in.kind == kindText {
 			in.text = make([]byte, 0, size)
 			in.left = size
 			return nil, nil
 		}
-		rel, err := cleanRel(string(body[11:]))
+		rel, err := CleanRel(string(body[11:]))
 		if err != nil {
 			return fail("%v", err)
 		}
@@ -463,7 +562,7 @@ func (r *Receiver) Frame(b []byte) (*Result, error) {
 		if int64(len(body)) > in.left {
 			return fail("more data than announced")
 		}
-		if in.kind == clip.Text {
+		if in.kind == kindText {
 			in.text = append(in.text, body...)
 		} else {
 			if in.file == nil {
@@ -484,20 +583,34 @@ func (r *Receiver) Frame(b []byte) (*Result, error) {
 		}
 	case FEnd:
 		if len(body) < 1 || body[0] != statusOK {
-			r.abort()
+			r.drop(id)
 			return nil, errors.New("xfer: the sender cancelled the transfer")
 		}
 		if in.left != 0 || in.seen != in.items || in.got != in.total {
 			return fail("the transfer ended early")
 		}
-		r.cur = nil
-		res := &Result{ID: id, Stats: Stats{Kind: in.kind, Bytes: in.got}}
-		if in.kind == clip.Text {
+		res := &Result{ID: id, Stats: Stats{Kind: clip.Files, Bytes: in.got, Files: in.items}}
+		switch in.kind {
+		case kindText:
+			res.Stats = Stats{Kind: clip.Text, Bytes: in.got}
 			res.Content = clip.Content{Kind: clip.Text, Text: string(in.text)}
-		} else {
-			res.Stats.Files = in.items
+		case kindFiles:
 			res.Content = clip.Content{Kind: clip.Files, Files: in.tops}
+		case kindDrop:
+			// Move the finished items next to earlier ones, under free names.
+			var placed []string
+			for _, top := range in.tops {
+				dst, err := place(top, r.DropDir)
+				if err != nil {
+					return fail("%v", err)
+				}
+				placed = append(placed, dst)
+			}
+			os.RemoveAll(in.root)
+			res.Drop = true
+			res.Content = clip.Content{Kind: clip.Files, Files: placed}
 		}
+		delete(r.active, id)
 		return res, nil
 	}
 	return nil, nil

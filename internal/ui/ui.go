@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -28,6 +29,7 @@ import (
 	"github.com/Ivlad003/edgehop/internal/layout"
 	"github.com/Ivlad003/edgehop/internal/logx"
 	"github.com/Ivlad003/edgehop/internal/secure"
+	"github.com/Ivlad003/edgehop/internal/xfer"
 )
 
 //go:embed web
@@ -48,6 +50,7 @@ type Options struct {
 	Exe        string   // the edgehop program, used to run the engine
 	EngineArgs []string // extra arguments for the engine
 	AutoStart  bool     // start the engine right away if the config is valid
+	SpoolDir   string   // where files dropped on the page wait to be sent ("" = system temp folder)
 }
 
 // Server is the settings page.
@@ -76,6 +79,10 @@ func New(opts Options) (*Server, error) {
 		// from other computers.
 		return nil, fmt.Errorf("the settings page may only listen on this computer (127.0.0.1), not on %s", host)
 	}
+	if opts.SpoolDir == "" {
+		opts.SpoolDir = filepath.Join(os.TempDir(), "edgehop-send")
+	}
+	cleanSpool(opts.SpoolDir)
 	if opts.TokenPath == "" {
 		opts.TokenPath = filepath.Join(filepath.Dir(config.UserPath()), "ui-token")
 	}
@@ -188,6 +195,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/start", s.api(http.MethodPost, s.handleStart))
 	mux.HandleFunc("/api/stop", s.api(http.MethodPost, s.handleStop))
 	mux.HandleFunc("/api/newkey", s.api(http.MethodPost, s.handleNewKey))
+	mux.HandleFunc("/api/send/begin", s.api(http.MethodPost, s.handleSendBegin))
+	mux.HandleFunc("/api/send/file", s.upload(s.handleSendFile))
+	mux.HandleFunc("/api/send/commit", s.api(http.MethodPost, s.handleSendCommit))
+	mux.HandleFunc("/api/send/cancel", s.api(http.MethodPost, s.handleSendCancel))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if t := r.URL.Query().Get("t"); t != "" && r.URL.Path == "/" {
 			// The link printed at start-up carries the token; trade it for
@@ -409,6 +420,148 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNewKey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"key": secure.NewKey()})
+}
+
+// ---------------------------------------------------------------------------
+// Sending files dropped on the page
+//
+// A browser never tells a page where a dropped file lives on disk, so the
+// page uploads the file to this server (same computer, so this is a local
+// copy), which keeps it in a spool folder and then asks the engine to send
+// that folder's content to another computer.
+
+// cleanSpool removes batches that were left behind more than a day ago.
+func cleanSpool(root string) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > 24*time.Hour {
+			os.RemoveAll(filepath.Join(root, e.Name()))
+		}
+	}
+}
+
+// batchDir returns the spool folder of a batch id made by handleSendBegin.
+func (s *Server) batchDir(batch string) (string, bool) {
+	if len(batch) != 16 {
+		return "", false
+	}
+	for _, c := range batch {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return "", false
+		}
+	}
+	dir := filepath.Join(s.opts.SpoolDir, batch)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", false
+	}
+	return dir, true
+}
+
+// upload wraps a handler that receives a raw file body: same access checks
+// as api, but no JSON and no size limit.
+func (s *Server) upload(fn func(w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, apiError{"method not allowed"})
+			return
+		}
+		c, err := r.Cookie(cookieName)
+		if err != nil || !s.tokenOK(c.Value) {
+			writeJSON(w, http.StatusUnauthorized, apiError{"unauthorized"})
+			return
+		}
+		fn(w, r)
+	}
+}
+
+func (s *Server) handleSendBegin(w http.ResponseWriter, r *http.Request) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+		return
+	}
+	batch := hex.EncodeToString(b)
+	if err := os.MkdirAll(filepath.Join(s.opts.SpoolDir, batch), 0o700); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"batch": batch})
+}
+
+func (s *Server) handleSendFile(w http.ResponseWriter, r *http.Request) {
+	dir, ok := s.batchDir(r.URL.Query().Get("batch"))
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, apiError{"unknown batch"})
+		return
+	}
+	rel, err := xfer.CleanRel(r.URL.Query().Get("path"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError{err.Error()})
+		return
+	}
+	target := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+		return
+	}
+	f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, apiError{"this file was already added"})
+		return
+	}
+	n, err := io.Copy(f, r.Body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(target)
+		writeJSON(w, http.StatusInternalServerError, apiError{err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int64{"bytes": n})
+}
+
+func (s *Server) handleSendCommit(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Batch string `json:"batch"`
+		To    string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiError{"invalid request"})
+		return
+	}
+	dir, ok := s.batchDir(req.Batch)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, apiError{"unknown batch"})
+		return
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) == 0 {
+		os.RemoveAll(dir)
+		writeJSON(w, http.StatusBadRequest, apiError{"no files to send"})
+		return
+	}
+	// The engine sends the folder's content and removes the folder.
+	cmd := map[string]string{"cmd": "send", "to": req.To, "dir": dir}
+	if err := s.engine.command(cmd); err != nil {
+		os.RemoveAll(dir)
+		writeJSON(w, http.StatusConflict, apiError{err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleSendCancel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Batch string `json:"batch"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if dir, ok := s.batchDir(req.Batch); ok {
+		os.RemoveAll(dir)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // LocalIPs lists this computer's LAN addresses, private IPv4 ranges first.

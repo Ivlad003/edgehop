@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +28,11 @@ func TestMain(m *testing.M) {
 		}
 		fmt.Fprintln(os.Stderr, "12:00:00.000 fake engine started: "+strings.Join(os.Args[1:], " "))
 		fmt.Println(`{"role":"client","name":"t","server":"srv:1","connected":true,"active":false}`)
-		io.Copy(io.Discard, os.Stdin) // the page closes stdin to stop us
+		// Commands arrive as lines on stdin; the page closes stdin to stop us.
+		sc := bufio.NewScanner(os.Stdin)
+		for sc.Scan() {
+			fmt.Fprintln(os.Stderr, "12:00:00.500 command: "+sc.Text())
+		}
 		fmt.Fprintln(os.Stderr, "12:00:01.000 fake engine stopping")
 		os.Exit(0)
 	}
@@ -50,6 +56,7 @@ func newRig(t *testing.T) *rig {
 		Addr:       "127.0.0.1:0",
 		ConfigPath: filepath.Join(dir, "edgehop.toml"),
 		TokenPath:  filepath.Join(dir, "ui-token"),
+		SpoolDir:   filepath.Join(dir, "spool"),
 		Version:    "1.2.3",
 		RepoURL:    "https://example.org/edgehop",
 		Exe:        os.Args[0],
@@ -324,5 +331,120 @@ func TestEngineFailureIsReported(t *testing.T) {
 	st := r.waitFor("the engine to fail", func(s state) bool { return !s.Engine.Running })
 	if st.Engine.Exit != "cannot listen on :1: boom" {
 		t.Errorf("exit reason = %q", st.Engine.Exit)
+	}
+}
+
+// put uploads one file body the way the page does.
+func (r *rig) put(batch, path string, body []byte, auth bool) (*http.Response, []byte) {
+	r.t.Helper()
+	q := url.Values{"batch": {batch}, "path": {path}}
+	req, _ := http.NewRequest(http.MethodPost, r.http.URL+"/api/send/file?"+q.Encode(), bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if auth {
+		req.AddCookie(r.cookie)
+	}
+	resp, err := r.client.Do(req)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return resp, data
+}
+
+func (r *rig) begin() string {
+	r.t.Helper()
+	resp, body := r.do("/api/send/begin", map[string]any{}, true, nil)
+	var out struct{ Batch string }
+	json.Unmarshal(body, &out)
+	if resp.StatusCode != 200 || len(out.Batch) != 16 {
+		r.t.Fatalf("begin: %d %s", resp.StatusCode, body)
+	}
+	return out.Batch
+}
+
+func TestSendingFilesThroughThePage(t *testing.T) {
+	r := newRig(t)
+	spool := r.srv.opts.SpoolDir
+
+	// Nothing can be sent while edgehop is not running.
+	early := r.begin()
+	r.put(early, "a.txt", []byte("x"), true)
+	if resp, body := r.do("/api/send/commit", map[string]any{"batch": early, "to": "srv"}, true, nil); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("commit without a running engine: %d %s", resp.StatusCode, body)
+	}
+	if _, err := os.Stat(filepath.Join(spool, early)); !os.IsNotExist(err) {
+		t.Error("a refused batch was left in the spool folder")
+	}
+
+	form := config.Form{Role: "client", Name: "lap", Key: "secret", Server: "10.0.0.1"}
+	if resp, body := r.do("/api/config", map[string]any{"config": form, "start": true}, true, nil); resp.StatusCode != 200 {
+		t.Fatalf("start: %d %s", resp.StatusCode, body)
+	}
+	r.waitFor("the engine", func(s state) bool { return s.Engine.Running })
+
+	batch := r.begin()
+	big := bytes.Repeat([]byte("0123456789abcdef"), 70000) // over a megabyte: no size limit on uploads
+	for path, body := range map[string][]byte{"notes.txt": []byte("привіт"), "album/2026/pic.bin": big} {
+		if resp, data := r.put(batch, path, body, true); resp.StatusCode != 200 {
+			t.Fatalf("upload %s: %d %s", path, resp.StatusCode, data)
+		}
+	}
+	dir := filepath.Join(spool, batch)
+	if data, _ := os.ReadFile(filepath.Join(dir, "notes.txt")); string(data) != "привіт" {
+		t.Errorf("notes.txt = %q", data)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "album", "2026", "pic.bin")); !bytes.Equal(data, big) {
+		t.Errorf("pic.bin has %d bytes, want %d", len(data), len(big))
+	}
+
+	// What must be refused.
+	if resp, _ := r.put(batch, "notes.txt", []byte("again"), true); resp.StatusCode != http.StatusConflict {
+		t.Errorf("the same file twice: status %d, want 409", resp.StatusCode)
+	}
+	for _, bad := range []string{"../evil.txt", "/etc/passwd", "a/../../b", ""} {
+		if resp, _ := r.put(batch, bad, []byte("x"), true); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("path %q: status %d, want 400", bad, resp.StatusCode)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(spool, "evil.txt")); err == nil {
+		t.Fatal("an upload escaped its batch folder")
+	}
+	if resp, _ := r.put(batch, "x.txt", []byte("x"), false); resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("upload without the cookie: status %d, want 401", resp.StatusCode)
+	}
+	for _, id := range []string{"0000000000000000", "../../../../etc", "short"} {
+		if resp, _ := r.put(id, "x.txt", []byte("x"), true); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("batch %q: status %d, want 400", id, resp.StatusCode)
+		}
+	}
+
+	// Commit hands the folder to the engine.
+	if resp, body := r.do("/api/send/commit", map[string]any{"batch": batch, "to": "srv"}, true, nil); resp.StatusCode != 200 {
+		t.Fatalf("commit: %d %s", resp.StatusCode, body)
+	}
+	st := r.waitFor("the command to reach the engine", func(s state) bool {
+		return strings.Contains(strings.Join(s.Logs, "\n"), `"cmd":"send"`)
+	})
+	var got map[string]string
+	for _, line := range st.Logs {
+		if i := strings.Index(line, "command: "); i >= 0 {
+			json.Unmarshal([]byte(line[i+len("command: "):]), &got)
+		}
+	}
+	if got["to"] != "srv" || got["dir"] != dir {
+		t.Errorf("command = %v, want to=srv dir=%s", got, dir)
+	}
+
+	// An empty batch is not sent; cancel removes a batch.
+	empty := r.begin()
+	if resp, _ := r.do("/api/send/commit", map[string]any{"batch": empty, "to": "srv"}, true, nil); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty batch: status %d, want 400", resp.StatusCode)
+	}
+	other := r.begin()
+	r.put(other, "a.txt", []byte("x"), true)
+	r.do("/api/send/cancel", map[string]any{"batch": other}, true, nil)
+	if _, err := os.Stat(filepath.Join(spool, other)); !os.IsNotExist(err) {
+		t.Error("cancel did not remove the batch")
 	}
 }

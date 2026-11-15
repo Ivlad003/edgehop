@@ -41,6 +41,10 @@ type Config struct {
 	Clipboard clip.Clipboard
 	ClipDir   string
 	ClipLimit int64
+
+	// DropDir is where files that another computer sends to this one are
+	// saved. Empty means this computer does not accept sent files.
+	DropDir string
 }
 
 // Client is a connection to a server that reconnects forever.
@@ -50,9 +54,10 @@ type Client struct {
 
 	connected atomic.Bool
 	active    atomic.Bool
-	lastErr   atomic.Value // string: why the last connection attempt failed
-	clipNote  atomic.Value // string: the last clipboard transfer
-	clipCount atomic.Int64 // completed clipboard transfers
+	lastErr   atomic.Value             // string: why the last connection attempt failed
+	clipNote  atomic.Value             // string: the last clipboard transfer
+	clipCount atomic.Int64             // completed clipboard transfers
+	link      atomic.Pointer[dataLink] // the data connection of the current session
 }
 
 // New creates a client.
@@ -74,6 +79,30 @@ func (c *Client) LastError() string {
 func (c *Client) ClipboardStatus() string {
 	s, _ := c.clipNote.Load().(string)
 	return s
+}
+
+// SendFiles sends files to the server, which saves them in its folder for
+// received files. It blocks until the transfer is over.
+func (c *Client) SendFiles(paths []string) error {
+	l := c.link.Load()
+	if l == nil {
+		return errors.New("not connected to the server")
+	}
+	return l.sendFiles(paths)
+}
+
+// ServerName returns the screen name of the server, "" while not connected.
+func (c *Client) ServerName() string {
+	if l := c.link.Load(); l != nil {
+		return l.server
+	}
+	return ""
+}
+
+// CanSendFiles reports whether files can be sent to the server right now.
+func (c *Client) CanSendFiles() bool {
+	l := c.link.Load()
+	return l != nil && l.serverDrop
 }
 
 // ClipboardTransfers counts the clipboard transfers completed so far.
@@ -170,6 +199,9 @@ func (c *Client) session(ctx context.Context) error {
 	if c.cfg.Clipboard != nil {
 		caps |= proto.CapClipboard
 	}
+	if c.cfg.DropDir != "" {
+		caps |= proto.CapDrop
+	}
 	if err := ch.Send(proto.AppendHello(nil, c.cfg.Name, runtime.GOOS, w, h, caps)); err != nil {
 		return err
 	}
@@ -198,12 +230,16 @@ func (c *Client) session(ctx context.Context) error {
 	}()
 
 	st := &state{inj: c.inj}
-	clips := c.openClipboard(ctx, ch, welcome)
-	if clips != nil {
-		defer clips.close()
+	link := c.openData(ctx, ch, welcome)
+	if link != nil {
+		defer link.close()
+		c.link.Store(link)
+		defer c.link.Store(nil)
 		wg.Add(1)
-		go func() { defer wg.Done(); clips.receive() }()
-		logx.Infof("clipboard: shared (%s)", c.cfg.Clipboard.Describe())
+		go func() { defer wg.Done(); link.receive() }()
+		if link.cb != nil {
+			logx.Infof("clipboard: shared (%s)", link.cb.Describe())
+		}
 	}
 	if udp, err := c.openUDP(conn); err != nil {
 		logx.Debugf("UDP unavailable, cursor motion will use TCP: %v", err)
@@ -263,12 +299,12 @@ func (c *Client) session(ctx context.Context) error {
 			st.mu.Unlock()
 			c.active.Store(false)
 			logx.Debugf("cursor left")
-			if clips != nil {
-				go clips.cursorLeft()
+			if link != nil {
+				go link.cursorLeft()
 			}
 		case proto.TClipSend:
-			if clips != nil {
-				go clips.send(m.Bundle)
+			if link != nil {
+				go link.sendClipboard(m.Bundle)
 			}
 		case proto.TButton:
 			st.mu.Lock()

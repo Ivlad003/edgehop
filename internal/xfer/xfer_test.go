@@ -185,11 +185,11 @@ func TestHostilePathsAreRefused(t *testing.T) {
 		}
 	}
 	// Characters that are legal on one system but not on another are replaced.
-	got, err := cleanRel(`dir/a:b?c*.txt`)
+	got, err := CleanRel(`dir/a:b?c*.txt`)
 	if err != nil || got != "dir/a_b_c_.txt" {
 		t.Errorf("cleanRel = %q, %v", got, err)
 	}
-	if got, _ := cleanRel(`C:\Windows\x.dll`); strings.ContainsAny(got, `:\`) {
+	if got, _ := CleanRel(`C:\Windows\x.dll`); strings.ContainsAny(got, `:\`) {
 		t.Errorf("a Windows path kept its separators: %q", got)
 	}
 }
@@ -260,5 +260,152 @@ func TestSizeText(t *testing.T) {
 		if got := Size(n); got != want {
 			t.Errorf("Size(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// capture collects the frames a sender produces.
+func capture(t *testing.T, send func(func([]byte) error) error) [][]byte {
+	t.Helper()
+	var frames [][]byte
+	if err := send(func(b []byte) error {
+		frames = append(frames, append([]byte(nil), b...))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return frames
+}
+
+func TestDropsLandInTheDropFolder(t *testing.T) {
+	src := t.TempDir()
+	write(t, filepath.Join(src, "звіт.txt"), "перший")
+	write(t, filepath.Join(src, "album", "1.jpg"), "jpeg")
+	drops := t.TempDir()
+	write(t, filepath.Join(drops, "звіт.txt"), "already here") // must not be overwritten
+	r := &Receiver{Dir: t.TempDir(), DropDir: drops, Limit: 1} // the clipboard limit does not apply to drops
+
+	frames := capture(t, func(send func([]byte) error) error {
+		_, err := SendDrop(send, 0x10, []string{filepath.Join(src, "звіт.txt"), filepath.Join(src, "album")}, "mac")
+		return err
+	})
+	if dest, isDrop := DropDest(frames[0]); !isDrop || dest != "mac" {
+		t.Fatalf("DropDest = %q, %v", dest, isDrop)
+	}
+	var res *Result
+	for _, f := range frames {
+		got, err := r.Frame(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			res = got
+		}
+	}
+	if res == nil || !res.Drop || len(res.Content.Files) != 2 {
+		t.Fatalf("result = %+v", res)
+	}
+	if res.Content.Files[0] != filepath.Join(drops, "звіт (2).txt") || res.Content.Files[1] != filepath.Join(drops, "album") {
+		t.Fatalf("placed at %v", res.Content.Files)
+	}
+	if read(t, filepath.Join(drops, "звіт.txt")) != "already here" || read(t, res.Content.Files[0]) != "перший" {
+		t.Error("an existing file was overwritten or the new one is wrong")
+	}
+	if read(t, filepath.Join(drops, "album", "1.jpg")) != "jpeg" {
+		t.Error("the folder did not arrive")
+	}
+	entries, _ := os.ReadDir(drops)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".edgehop-incoming") {
+			t.Errorf("temporary folder %s was left behind", e.Name())
+		}
+	}
+
+	// A second drop of the same items gets new names instead of replacing them.
+	for _, f := range capture(t, func(send func([]byte) error) error {
+		_, err := SendDrop(send, 0x11, []string{filepath.Join(src, "album")}, "")
+		return err
+	}) {
+		if got, err := r.Frame(f); err != nil {
+			t.Fatal(err)
+		} else if got != nil && got.Content.Files[0] != filepath.Join(drops, "album (2)") {
+			t.Errorf("second drop placed at %v", got.Content.Files)
+		}
+	}
+
+	// A text bundle is not a drop.
+	if _, isDrop := DropDest(bundle(1, clip.Text, 1, 3)); isDrop {
+		t.Error("a text bundle was taken for a drop")
+	}
+	// A computer without a drop folder refuses drops.
+	closed := &Receiver{Dir: t.TempDir()}
+	if _, err := closed.Frame(frames[0]); err == nil {
+		t.Error("a drop was accepted without a drop folder")
+	}
+}
+
+// Two bundles whose frames arrive interleaved (a long file transfer and a
+// clipboard text, say) must both complete.
+func TestInterleavedBundles(t *testing.T) {
+	src := t.TempDir()
+	write(t, filepath.Join(src, "big.bin"), strings.Repeat("Z", 3*ChunkSize+17))
+	r := &Receiver{Dir: t.TempDir(), DropDir: t.TempDir()}
+	files := capture(t, func(send func([]byte) error) error {
+		_, err := Send(send, 1, clip.Content{Kind: clip.Files, Files: []string{filepath.Join(src, "big.bin")}}, 0)
+		return err
+	})
+	text := capture(t, func(send func([]byte) error) error {
+		_, err := Send(send, 2, clip.Content{Kind: clip.Text, Text: "meanwhile"}, 0)
+		return err
+	})
+	drop := capture(t, func(send func([]byte) error) error {
+		_, err := SendDrop(send, 3, []string{filepath.Join(src, "big.bin")}, "")
+		return err
+	})
+	// A second clipboard-files bundle starts while the first is unfinished:
+	// its clean-up must not remove the folder of the first.
+	other := capture(t, func(send func([]byte) error) error {
+		_, err := Send(send, 4, clip.Content{Kind: clip.Files, Files: []string{filepath.Join(src, "big.bin")}}, 0)
+		return err
+	})
+	done := map[uint32]*Result{}
+	queues := [][][]byte{files, text, drop, other}
+	for remaining := true; remaining; {
+		remaining = false
+		for i := range queues {
+			if len(queues[i]) == 0 {
+				continue
+			}
+			remaining = true
+			res, err := r.Frame(queues[i][0])
+			queues[i] = queues[i][1:]
+			if err != nil {
+				t.Fatalf("stream %d: %v", i+1, err)
+			}
+			if res != nil {
+				done[res.ID] = res
+			}
+		}
+	}
+	if len(done) != 4 {
+		t.Fatalf("%d of 4 bundles completed", len(done))
+	}
+	if done[2].Content.Text != "meanwhile" || !done[3].Drop {
+		t.Errorf("text %q, drop %v", done[2].Content.Text, done[3].Drop)
+	}
+	for _, id := range []uint32{1, 3, 4} {
+		if got := read(t, done[id].Content.Files[0]); len(got) != 3*ChunkSize+17 {
+			t.Errorf("bundle %d: file has %d bytes", id, len(got))
+		}
+	}
+	// Abort removes whatever is still unfinished.
+	r.Frame(bundle(9, clip.Files, 1, 5))
+	r.Frame(file(9, 0, 5, "half.txt"))
+	r.Frame(bundle(10, 3, 1, 5))
+	r.Abort()
+	if _, err := os.Stat(filepath.Join(r.Dir, "00000009")); !os.IsNotExist(err) {
+		t.Error("Abort left a clipboard bundle folder behind")
+	}
+	if _, err := os.Stat(filepath.Join(r.DropDir, ".edgehop-incoming-0000000a")); !os.IsNotExist(err) {
+		t.Error("Abort left a drop folder behind")
 	}
 }

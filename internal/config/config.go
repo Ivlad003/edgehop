@@ -51,6 +51,10 @@ type Config struct {
 	Clipboard      *bool `toml:"clipboard"`
 	ClipboardMaxMB int   `toml:"clipboard_max_mb,omitzero"`
 
+	// Both: the folder for files that another computer sends to this one.
+	// Default: "edgehop" inside the Downloads folder.
+	Downloads string `toml:"downloads,omitempty"`
+
 	// Both: override the detected desktop size, "1920x1080".
 	ScreenSize string `toml:"screen_size,omitempty"`
 
@@ -261,6 +265,18 @@ func (c *Config) ClipboardLimit() int64 {
 		mb = DefaultClipboardMaxMB
 	}
 	return int64(mb) << 20
+}
+
+// DownloadDir returns the folder for files sent to this computer.
+func (c *Config) DownloadDir() string {
+	if d := strings.TrimSpace(c.Downloads); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "edgehop")
+	}
+	return filepath.Join(home, "Downloads", "edgehop")
 }
 
 // HideCursorEnabled reports whether the server should hide its cursor while

@@ -126,7 +126,7 @@ button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visibl
 .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .status-line { margin: 10px 0 0; }
-.hint { display: block; color: var(--muted); font-size: 13px; }
+.hint { display: block; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 p.hint { margin: 10px 0 0; }
 .error {
   margin: 10px 0 0;
@@ -272,6 +272,41 @@ code.cmd { display: block; flex: 1 1 320px; padding: 8px 10px; }
 .note:empty { display: none; }
 
 .row-cap { align-self: center; color: var(--muted); font-size: 13px; white-space: nowrap; }
+
+/* Sending files: who gets them, and the place to drop them. */
+.targets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.targets:empty { display: none; }
+.targets .t-label { color: var(--muted); }
+.targets .t-one { font-weight: 650; }
+.targets button[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent); font-weight: 600; }
+.drop {
+  margin-top: 12px;
+  padding: 22px 16px;
+  border: 2px dashed var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.drop .drop-text { margin: 0; color: var(--muted); }
+.drop .actions { justify-content: center; }
+.drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop.over .drop-text { color: var(--text); }
+.drop.off { opacity: 0.55; }
+.send-progress { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.send-progress progress { flex: 1 1 200px; height: 10px; accent-color: var(--accent); }
+.send-progress .send-text { flex: 2 1 240px; font-size: 14px; overflow-wrap: anywhere; }
+.done {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: var(--ok-soft);
+  color: var(--ok);
+  overflow-wrap: anywhere;
+}
 
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
 .pair .hint { grid-column: 1 / -1; }

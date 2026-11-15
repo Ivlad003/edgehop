@@ -47,6 +47,28 @@
       <p class="hint" id="status-hint"></p>
     </section>
 
+    <section class="card" id="send-card" hidden>
+      <h2 data-t="sendTitle"></h2>
+      <div class="targets" id="send-targets"></div>
+      <div class="drop" id="drop">
+        <p class="drop-text" data-t="dropText"></p>
+        <div class="actions">
+          <button type="button" id="pick-files" data-t="pickFiles"></button>
+          <button type="button" id="pick-folder" data-t="pickFolder"></button>
+        </div>
+        <input type="file" id="file-input" multiple hidden>
+        <input type="file" id="folder-input" webkitdirectory hidden>
+      </div>
+      <div class="send-progress" id="send-progress" hidden>
+        <progress id="send-bar" max="1000" value="0"></progress>
+        <span class="send-text" id="send-text" role="status"></span>
+        <button type="button" class="small" id="send-cancel" data-t="cancel"></button>
+      </div>
+      <p class="error" id="send-error" hidden></p>
+      <p class="done" id="send-done" hidden></p>
+      <p class="hint" id="send-hint"></p>
+    </section>
+
     <section class="card" id="setup-card">
       <h2 data-t="setupTitle"></h2>
       <p class="error" id="config-error" hidden></p>

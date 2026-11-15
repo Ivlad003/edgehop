@@ -59,7 +59,20 @@ const TEXT = {
     clipTitle: "Буфер обміну: обмеження",
     clipMax: "Найбільший розмір для передачі, МБ",
     clipHint: "Більший вміст не передається. Зображення (наприклад знімки екрана) поки не передаються.",
-    clipLast: "Буфер обміну: {0}",
+    clipLast: "Остання передача: {0}",
+    sendTitle: "Надіслати файли",
+    dropText: "Перетягніть сюди файли або папки — вони з'являться на іншому комп'ютері.",
+    pickFiles: "Вибрати файли", pickFolder: "Вибрати папку", cancel: "Скасувати",
+    sendTo: "Кому:",
+    sendNoTarget: "Зараз немає підключеного комп'ютера, який приймає файли: на ньому потрібен edgehop 0.3 або новіший.",
+    sendCopying: "Підготовка: файл {0} з {1}, разом {2}",
+    sendSending: "Надсилання на «{0}»…",
+    sendDone: "Надіслано на «{0}»: файлів — {1}, {2}.",
+    sendFailed: "Не вдалося надіслати: {0}",
+    sendEmpty: "Тут немає файлів, які можна надіслати.",
+    sendReadError: "файл не вдалося прочитати",
+    sendStopped: "edgehop зупинено",
+    savedIn: "Файли, надіслані на цей комп'ютер, зберігаються в {0}",
     speedHint: "Швидкість курсора підбирається автоматично під розмір кожного екрана. Число нижче множить її: 1 — як є, 1.5 — у півтора раза швидше.",
     speed: 'Швидкість курсора',
     swap: 'Поміняти Alt і Win/Cmd (PC-клавіатура ↔ Mac)',
@@ -148,7 +161,20 @@ const TEXT = {
     clipTitle: "Clipboard: limits",
     clipMax: "Largest size to transfer, MB",
     clipHint: "Larger content is not transferred. Images (screenshots, for example) are not transferred yet.",
-    clipLast: "Clipboard: {0}",
+    clipLast: "Last transfer: {0}",
+    sendTitle: "Send files",
+    dropText: "Drop files or folders here — they appear on the other computer.",
+    pickFiles: "Choose files", pickFolder: "Choose a folder", cancel: "Cancel",
+    sendTo: "To:",
+    sendNoTarget: "No connected computer accepts files right now: it needs edgehop 0.3 or newer.",
+    sendCopying: "Preparing: file {0} of {1}, {2} in total",
+    sendSending: "Sending to “{0}”…",
+    sendDone: "Sent to “{0}”: {1} file(s), {2}.",
+    sendFailed: "Could not send: {0}",
+    sendEmpty: "There are no files here that can be sent.",
+    sendReadError: "the file could not be read",
+    sendStopped: "edgehop was stopped",
+    savedIn: "Files sent to this computer are saved in {0}",
     speedHint: "The cursor speed is matched to the size of each screen automatically. The number below multiplies it: 1 keeps it, 1.5 makes it one and a half times faster.",
     speed: 'Cursor speed',
     swap: 'Swap Alt and Win/Cmd (PC keyboard ↔ Mac)',
@@ -511,7 +537,11 @@ function renderLive(force) {
   const eng = S.engine;
   const st = eng.status || null;
   const key = JSON.stringify([lang, eng, S.config, S.configExists, S.configError, S.addresses, S.desktopW, S.desktopH, S.hostname, S.version, showKey]);
-  if (!force && key === lastLive) { renderLog(); return; }
+  if (!force && key === lastLive) {
+    if (sending.phase === 'sending') { checkSend(); renderSend(); }
+    renderLog();
+    return;
+  }
   lastLive = key;
 
   $('version').textContent = S.version ? 'v' + S.version.replace(/^v/, '') : '';
@@ -561,6 +591,8 @@ function renderLive(force) {
     if (st.clipboard) hint.textContent = t('clipLast', st.clipboard);
   }
 
+  checkSend();
+  renderSend();
   renderOthers();
   renderThis();
   renderLog();
@@ -617,6 +649,261 @@ function renderLog() {
   const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
   log.textContent = text;
   if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Sending files
+//
+// A page is never told where a dropped file lives on disk, so the file is
+// handed to edgehop on this computer first (a local copy), and edgehop sends
+// it on to the other computer.
+
+const sending = {
+  phase: 'idle',   // idle | copying | sending
+  to: '',          // the chosen receiver
+  target: '',      // the receiver of the transfer in progress
+  batch: '',
+  xhr: null,
+  cancelled: false,
+  frac: 0,
+  text: '',
+  error: '',
+  done: '',
+  count: 0,
+  bytes: 0,
+  waitFor: 0,      // the engine's sendDone value that means "finished"
+};
+
+function formatSize(n) {
+  const units = lang === 'uk' ? ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'] : ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  const digits = i === 0 || n >= 100 ? 0 : 1;
+  return n.toFixed(digits).replace('.', lang === 'uk' ? ',' : '.') + ' ' + units[i];
+}
+
+// Who can receive files right now.
+function sendTargets(st) {
+  if (!S || !S.engine.running || !st) return [];
+  if (st.role === 'server') {
+    return (st.screens || []).filter((s) => !s.self && s.connected && s.files).map((s) => s.name);
+  }
+  return st.connected && st.files ? [st.serverName || st.server] : [];
+}
+
+function renderSend() {
+  const st = S && S.engine.running ? (S.engine.status || null) : null;
+  show('send-card', !!st);
+  if (!st) return;
+
+  const targets = sendTargets(st);
+  if (!targets.includes(sending.to)) sending.to = targets[0] || '';
+  const idle = sending.phase === 'idle';
+  const box = $('send-targets');
+  box.replaceChildren();
+  box.removeAttribute('role');
+  if (targets.length === 1) {
+    box.append(el('span', { class: 't-label', text: t('sendTo') }), el('span', { class: 't-one', text: targets[0] }));
+  } else if (targets.length > 1) {
+    box.setAttribute('role', 'radiogroup');
+    box.append(el('span', { class: 't-label', text: t('sendTo') }));
+    for (const name of targets) {
+      box.append(el('button', {
+        type: 'button', class: 'small', role: 'radio', 'aria-checked': String(name === sending.to), disabled: !idle, text: name,
+        onclick: () => { sending.to = name; renderSend(); },
+      }));
+    }
+  }
+
+  const ready = targets.length > 0 && idle;
+  $('drop').classList.toggle('off', !ready);
+  $('pick-files').disabled = !ready;
+  $('pick-folder').disabled = !ready;
+
+  show('send-progress', !idle);
+  if (sending.phase === 'sending') $('send-bar').removeAttribute('value'); // no percentage for this part
+  else $('send-bar').value = Math.round(sending.frac * 1000);
+  $('send-text').textContent = sending.text;
+  show('send-cancel', sending.phase === 'copying');
+  $('send-error').textContent = sending.error;
+  show('send-error', !!sending.error);
+  $('send-done').textContent = sending.done;
+  show('send-done', !!sending.done);
+
+  const hint = [];
+  if (targets.length === 0) hint.push(t('sendNoTarget'));
+  if (st.downloads) hint.push(t('savedIn', st.downloads));
+  $('send-hint').textContent = hint.join(' ');
+}
+
+// checkSend notices that the engine finished (or gave up on) the transfer.
+function checkSend() {
+  if (sending.phase !== 'sending') return;
+  const st = S.engine.running ? (S.engine.status || null) : null;
+  if (!st) {
+    sending.phase = 'idle';
+    sending.error = t('sendFailed', t('sendStopped'));
+    return;
+  }
+  if ((st.sendDone || 0) < sending.waitFor) return;
+  sending.phase = 'idle';
+  if (st.sendError) sending.error = t('sendFailed', st.sendError);
+  else sending.done = t('sendDone', sending.target, sending.count, formatSize(sending.bytes));
+}
+
+function readAllEntries(reader) {
+  // readEntries hands the folder over in portions; an empty one ends it.
+  return new Promise((resolve, reject) => {
+    const all = [];
+    const next = () => reader.readEntries((part) => {
+      if (part.length === 0) resolve(all);
+      else { all.push(...part); next(); }
+    }, reject);
+    next();
+  });
+}
+
+async function walkEntry(entry, prefix, out) {
+  if (entry.isFile) {
+    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+    out.push({ file: file, path: prefix + entry.name });
+  } else if (entry.isDirectory) {
+    for (const child of await readAllEntries(entry.createReader())) {
+      await walkEntry(child, prefix + entry.name + '/', out);
+    }
+  }
+}
+
+// droppedItems lists the files of a drop, folders included. The entries must
+// be taken before the first await: the drop data is gone after that.
+async function droppedItems(dt) {
+  const out = [];
+  const entries = [];
+  for (const item of Array.from(dt.items || [])) {
+    if (item.kind !== 'file') continue;
+    const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+    if (entry) entries.push(entry);
+    else {
+      const file = item.getAsFile();
+      if (file) out.push({ file: file, path: file.name });
+    }
+  }
+  const plain = Array.from(dt.files || []);
+  for (const entry of entries) await walkEntry(entry, '', out);
+  if (out.length === 0 && entries.length === 0) for (const file of plain) out.push({ file: file, path: file.name });
+  return out;
+}
+
+function pickedItems(input) {
+  const out = Array.from(input.files || []).map((file) => ({ file: file, path: file.webkitRelativePath || file.name }));
+  input.value = '';
+  return out;
+}
+
+function uploadOne(batch, item, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    sending.xhr = xhr;
+    xhr.open('POST', '/api/send/file?batch=' + encodeURIComponent(batch) + '&path=' + encodeURIComponent(item.path));
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = (e) => onProgress(e.loaded);
+    xhr.onload = () => {
+      if (xhr.status === 200) { resolve(); return; }
+      let msg = 'HTTP ' + xhr.status;
+      try { msg = JSON.parse(xhr.responseText).error || msg; } catch (e) { /* not JSON */ }
+      reject(new Error(item.path + ': ' + msg));
+    };
+    xhr.onerror = () => reject(new Error(item.path + ': ' + t('sendReadError')));
+    xhr.onabort = () => reject(new Error('cancelled'));
+    xhr.send(item.file);
+  });
+}
+
+async function sendItems(items) {
+  if (sending.phase !== 'idle' || !sending.to) return;
+  sending.error = '';
+  sending.done = '';
+  if (items.length === 0) {
+    sending.error = t('sendEmpty');
+    renderSend();
+    return;
+  }
+  const total = items.reduce((n, it) => n + it.file.size, 0);
+  Object.assign(sending, {
+    phase: 'copying', target: sending.to, batch: '', cancelled: false, frac: 0,
+    count: items.length, bytes: total, text: t('sendCopying', 1, items.length, formatSize(total)),
+  });
+  renderSend();
+  try {
+    sending.batch = (await api('/api/send/begin', {})).batch;
+    let before = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (sending.cancelled) throw new Error('cancelled');
+      sending.text = t('sendCopying', i + 1, items.length, formatSize(total));
+      $('send-text').textContent = sending.text;
+      await uploadOne(sending.batch, items[i], (loaded) => {
+        sending.frac = total > 0 ? Math.min(1, (before + loaded) / total) : 1;
+        $('send-bar').value = Math.round(sending.frac * 1000);
+      });
+      before += items[i].file.size;
+    }
+    const fresh = await api('/api/state');
+    sending.waitFor = (((fresh.engine || {}).status || {}).sendDone || 0) + 1;
+    await api('/api/send/commit', { batch: sending.batch, to: sending.target });
+    sending.phase = 'sending';
+    sending.text = t('sendSending', sending.target);
+  } catch (e) {
+    if (sending.batch) api('/api/send/cancel', { batch: sending.batch }).catch(() => {});
+    sending.phase = 'idle';
+    sending.error = sending.cancelled ? '' : t('sendFailed', e.message);
+  }
+  sending.xhr = null;
+  checkSend(); // a small transfer may be over already
+  renderSend();
+}
+
+function initSend() {
+  const drop = $('drop');
+  let depth = 0; // dragenter and dragleave also fire for every child element
+  const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  // The whole window takes the drop, so a file that misses the frame by a
+  // few pixels is sent too - instead of the browser opening it and leaving.
+  window.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth++;
+    if (!$('send-card').hidden) drop.classList.add('over');
+  });
+  window.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const ready = !$('send-card').hidden && sending.phase === 'idle' && !!sending.to;
+    e.dataTransfer.dropEffect = ready ? 'copy' : 'none';
+  });
+  window.addEventListener('dragleave', (e) => {
+    if (!hasFiles(e)) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) drop.classList.remove('over');
+  });
+  window.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth = 0;
+    drop.classList.remove('over');
+    if ($('send-card').hidden || sending.phase !== 'idle' || !sending.to) return;
+    droppedItems(e.dataTransfer).then(sendItems, (err) => {
+      sending.error = t('sendFailed', err && err.message ? err.message : t('sendReadError'));
+      renderSend();
+    });
+  });
+  $('pick-files').addEventListener('click', () => $('file-input').click());
+  $('pick-folder').addEventListener('click', () => $('folder-input').click());
+  $('file-input').addEventListener('change', (e) => sendItems(pickedItems(e.currentTarget)));
+  $('folder-input').addEventListener('change', (e) => sendItems(pickedItems(e.currentTarget)));
+  $('send-cancel').addEventListener('click', () => {
+    sending.cancelled = true;
+    if (sending.xhr) sending.xhr.abort();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +1007,7 @@ function init() {
   $('stop').addEventListener('click', () => engineAction('/api/stop'));
   $('o-key-copy').addEventListener('click', (e) => copyText(S.config.key || '', e.currentTarget));
   $('o-cmd-copy').addEventListener('click', (e) => copyText($('o-cmd').dataset.full || '', e.currentTarget));
+  initSend();
 
   poll();
   setInterval(poll, 1000);
