@@ -406,6 +406,13 @@ func (c *macCapturer) Raise() {
 	}
 }
 
+// Resize and Hide are not available on macOS yet.
+func (c *macCapturer) Resize(w, h int) {}
+func (c *macCapturer) Hide(on bool)    {}
+
+// RestoreHidden has nothing to do on this system.
+func RestoreHidden() int { return 0 }
+
 // Dragged returns the window the user is moving with the mouse right now.
 // This system offers no way to tell, so dragging a window to another
 // computer starts only on Windows.

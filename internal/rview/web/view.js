@@ -9,6 +9,8 @@ const TEXT = {
     ended: 'Показ завершено: {0}',
     lost: 'з\'єднання втрачено',
     retry: 'Спробувати знову',
+    blank: 'Той комп\'ютер віддає це вікно чорним: програма не дає себе знімати, або екран там вимкнено чи заблоковано.',
+    noDecode: 'Цей браузер не зміг показати картинку вікна. Спробуйте Chrome або Edge.',
     // What the other computer says when it stops, in its own words.
     'the window was closed': 'вікно закрито',
     'the connection to the other computer was lost': 'з\'єднання з тим комп\'ютером втрачено',
@@ -18,6 +20,8 @@ const TEXT = {
     ended: 'The view ended: {0}',
     lost: 'the connection was lost',
     retry: 'Try again',
+    blank: 'That computer returns this window as a black picture: the program does not allow pictures of itself, or the screen there is off or locked.',
+    noDecode: 'This browser could not show the picture of the window. Try Chrome or Edge.',
   },
 };
 
@@ -50,7 +54,7 @@ const KEY = {
 const BUTTON = { 0: 1, 1: 3, 2: 2, 3: 4, 4: 5 };
 
 // Kinds of input events, as the local edgehop expects them.
-const EV = { pointer: 1, button: 2, wheel: 3, key: 4, release: 5, ack: 6 };
+const EV = { pointer: 1, button: 2, wheel: 3, key: 4, release: 5, ack: 6, resize: 7 };
 
 const params = new URLSearchParams(location.search);
 const peer = params.get('peer') || '';
@@ -197,11 +201,40 @@ function layout() {
   canvas.style.height = Math.max(1, Math.round(h * scale)) + 'px';
 }
 
+function setNote(text) {
+  const note = document.getElementById('note');
+  note.textContent = text || '';
+  note.hidden = !text;
+}
+
+// The window on the other computer follows the size of this one: then its
+// picture is shown at its own size and fills this window, instead of being
+// squeezed into it. Each size is asked for once; a window that cannot take
+// it (some have a fixed size) is simply shown scaled.
+let sizeTimer = 0;
+let sizeAsked = '';
+
+function askSize(delay) {
+  clearTimeout(sizeTimer);
+  sizeTimer = setTimeout(() => {
+    if (!sid || canvas.width < 2) return;
+    const w = Math.round(window.innerWidth);
+    const h = Math.round(window.innerHeight);
+    if (w < 160 || h < 120) return;
+    if (Math.abs(w - canvas.width) <= 2 && Math.abs(h - canvas.height) <= 2) return;
+    if (sizeAsked === w + 'x' + h) return;
+    sizeAsked = w + 'x' + h;
+    push([EV.resize, w, h]);
+  }, delay);
+}
+
 let lastTitle = '';
+let firstMeta = true;
 
 function onMeta(meta) {
   if (meta.title) lastTitle = meta.title; // a window that is closing has no title any more
   document.title = lastTitle + ' — ' + meta.name + ' (' + (OS[meta.os] || meta.os) + ')';
+  setNote(meta.blank ? t('blank') : '');
   drawing = drawing.then(() => {
     if (canvas.width !== meta.w || canvas.height !== meta.h) {
       canvas.width = meta.w;
@@ -209,7 +242,28 @@ function onMeta(meta) {
     }
     fitWindow(meta.w, meta.h);
     layout();
+    if (firstMeta) {
+      firstMeta = false;
+      askSize(600); // once this window has settled at its size
+    }
   });
+}
+
+// decode turns picture data into something a canvas can draw. Browsers that
+// lack the quick way, or fail at it, get the ordinary one.
+async function decode(blob) {
+  if (window.createImageBitmap) {
+    try { return await createImageBitmap(blob); } catch (e) { /* try the other way */ }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    return img;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function onRect(payload) {
@@ -222,10 +276,12 @@ function onRect(payload) {
   const blob = new Blob([payload.slice(14)], { type: format === 1 ? 'image/jpeg' : 'image/png' });
   drawing = drawing.then(async () => {
     try {
-      const bitmap = await createImageBitmap(blob);
-      ctx.drawImage(bitmap, x, y);
-      bitmap.close();
-    } catch (e) { /* a picture that does not decode is skipped */ }
+      const picture = await decode(blob);
+      ctx.drawImage(picture, x, y);
+      if (picture.close) picture.close();
+    } catch (e) {
+      setNote(t('noDecode')); // better said than a window that stays dark
+    }
     if (last) {
       setStatus('');
       push([EV.ack, seq]); // drawn: the other computer may send the next one
@@ -245,8 +301,8 @@ async function run() {
   setStatus(t('connecting'));
   let reason = '';
   try {
-    const front = params.get('front') === '1' ? '&front=1' : '';
-    const resp = await fetch('/api/stream?peer=' + encodeURIComponent(peer) + '&win=' + encodeURIComponent(win) + front,
+    const extra = (params.get('front') === '1' ? '&front=1' : '') + (params.get('hide') === '1' ? '&hide=1' : '');
+    const resp = await fetch('/api/stream?peer=' + encodeURIComponent(peer) + '&win=' + encodeURIComponent(win) + extra,
       { cache: 'no-store', credentials: 'same-origin' });
     if (!resp.ok) throw new Error((await resp.text()) || ('HTTP ' + resp.status));
     const reader = resp.body.getReader();
@@ -280,6 +336,6 @@ document.documentElement.lang = lang;
 document.title = 'edgehop — ' + peer;
 document.getElementById('retry').textContent = t('retry');
 document.getElementById('retry').addEventListener('click', () => location.reload());
-window.addEventListener('resize', layout);
+window.addEventListener('resize', () => { layout(); askSize(250); });
 wireInput();
 run();

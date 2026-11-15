@@ -73,6 +73,8 @@ type metaInfo struct {
 	H     int    `json:"h"`
 	Name  string `json:"name"`
 	OS    string `json:"os"`
+	// Blank: the window gives no picture - it comes out black whatever is tried.
+	Blank bool `json:"blank,omitempty"`
 }
 
 // view is one view connection on the source side.
@@ -122,12 +124,19 @@ func (s *Source) Serve(conn Conn) {
 				default:
 				}
 			}
-		case mFront:
+		case mFront, mResize, mHide:
 			v.mu.Lock()
-			if v.cap != nil {
+			switch {
+			case v.cap == nil:
+			case msg[0] == mFront:
 				v.cap.Raise()
+			case msg[0] == mResize && len(msg) >= 5:
+				v.cap.Resize(int(be.Uint16(msg[1:])), int(be.Uint16(msg[3:])))
+			case msg[0] == mHide && len(msg) >= 2:
+				v.cap.Hide(msg[1] != 0)
 			}
 			v.mu.Unlock()
+			v.active.Store(time.Now().UnixNano())
 		case mPointer, mButton, mWheel, mKey, mRelease:
 			v.input(msg)
 		}
@@ -278,7 +287,7 @@ func (v *view) pictures(c wincap.Capturer) {
 		v.mu.Unlock()
 
 		resized := prev.W != w || prev.H != h
-		if m := (metaInfo{Title: cur.Title, W: w, H: h, Name: v.src.Name, OS: v.src.OS}); m != lastMeta {
+		if m := (metaInfo{Title: cur.Title, W: w, H: h, Name: v.src.Name, OS: v.src.OS, Blank: cur.Blank}); m != lastMeta {
 			data, _ := json.Marshal(m)
 			if v.send(append([]byte{mMeta}, data...)) != nil {
 				return

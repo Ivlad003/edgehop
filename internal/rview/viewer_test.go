@@ -303,7 +303,7 @@ func TestWindowLinkOpensThatWindow(t *testing.T) {
 		return resp.StatusCode, resp.Header.Get("Location"), len(resp.Cookies()) > 0
 	}
 	code, to, cookie := location(r.v.WindowURL("win", 7))
-	if code != http.StatusSeeOther || to != "/view.html?front=1&peer=win&win=7" || !cookie {
+	if code != http.StatusSeeOther || to != "/view.html?front=1&hide=1&peer=win&win=7" || !cookie {
 		t.Errorf("the window link: %d to %q, cookie %v", code, to, cookie)
 	}
 	for _, bad := range []string{"//evil.example/view.html?x", "https://evil.example/", "/api/peers", "index.html"} {
@@ -316,16 +316,32 @@ func TestWindowLinkOpensThatWindow(t *testing.T) {
 	// Opened that way, the window is brought to the front on its computer.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, "GET", r.base+"/api/stream?peer=win&win=7&front=1", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", r.base+"/api/stream?peer=win&win=7&front=1&hide=1", nil)
 	resp, err := (&http.Client{Jar: r.client.Jar}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	eventually(t, "the window to be raised", func() bool {
+	eventually(t, "the window to be raised and hidden", func() bool {
 		r.desk.mu.Lock()
 		defer r.desk.mu.Unlock()
-		return r.desk.raises == 1
+		return r.desk.raises == 1 && r.desk.hidden
+	})
+	// The size of the browser window is passed on to the window.
+	br := bufio.NewReader(resp.Body)
+	typ, payload, err := browserMsg(br)
+	if err != nil || typ != bHello {
+		t.Fatalf("first message: %d %v", typ, err)
+	}
+	var hello struct{ Sid string }
+	json.Unmarshal(payload, &hello)
+	if code := r.input(hello.Sid, fmt.Sprintf(`[[%d,260,140],[%d,0,140],[%d,70000,10]]`, evResize, evResize, evResize)); code != http.StatusNoContent {
+		t.Fatalf("resize: status %d", code)
+	}
+	eventually(t, "the new size", func() bool {
+		r.desk.mu.Lock()
+		defer r.desk.mu.Unlock()
+		return fmt.Sprint(r.desk.sizes) == "[[260 140]]"
 	})
 }
 

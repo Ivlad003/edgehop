@@ -637,6 +637,9 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	defer inj.Close()
 	w, h := inj.Size()
 	logx.Infof("client %q, desktop %dx%d, server %s", cfg.Name, w, h, cfg.Server)
+	if n := wincap.RestoreHidden(); n > 0 {
+		logx.Infof("remote windows: showed %d window(s) again that were left hidden when edgehop last stopped", n)
+	}
 	logx.Infof("input: %s", inj.Describe())
 	cb, clipDir := openClipboard(cfg, noInput)
 	var view *rview.Source

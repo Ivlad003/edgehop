@@ -5,6 +5,7 @@ package wincap
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -20,31 +21,35 @@ var (
 	dwmapi   = syscall.NewLazyDLL("dwmapi.dll")
 	kernel32 = syscall.NewLazyDLL("kernel32.dll")
 
-	pEnumWindows              = user32.NewProc("EnumWindows")
-	pIsWindow                 = user32.NewProc("IsWindow")
-	pIsWindowVisible          = user32.NewProc("IsWindowVisible")
-	pIsIconic                 = user32.NewProc("IsIconic")
-	pIsHungAppWindow          = user32.NewProc("IsHungAppWindow")
-	pGetWindowTextW           = user32.NewProc("GetWindowTextW")
-	pGetWindowTextLengthW     = user32.NewProc("GetWindowTextLengthW")
-	pGetWindow                = user32.NewProc("GetWindow")
-	pGetAncestor              = user32.NewProc("GetAncestor")
-	pGetWindowLongPtrW        = user32.NewProc("GetWindowLongPtrW")
-	pGetWindowRect            = user32.NewProc("GetWindowRect")
-	pGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
-	pGetShellWindow           = user32.NewProc("GetShellWindow")
-	pGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
-	pSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
-	pShowWindow               = user32.NewProc("ShowWindow")
-	pSetWindowPos             = user32.NewProc("SetWindowPos")
-	pGetDC                    = user32.NewProc("GetDC")
-	pReleaseDC                = user32.NewProc("ReleaseDC")
-	pPrintWindow              = user32.NewProc("PrintWindow")
-	pGetSystemMetrics         = user32.NewProc("GetSystemMetrics")
-	pGetGUIThreadInfo         = user32.NewProc("GetGUIThreadInfo")
-	pIsZoomed                 = user32.NewProc("IsZoomed")
-	pMonitorFromWindow        = user32.NewProc("MonitorFromWindow")
-	pGetMonitorInfoW          = user32.NewProc("GetMonitorInfoW")
+	pEnumWindows                = user32.NewProc("EnumWindows")
+	pIsWindow                   = user32.NewProc("IsWindow")
+	pIsWindowVisible            = user32.NewProc("IsWindowVisible")
+	pIsIconic                   = user32.NewProc("IsIconic")
+	pIsHungAppWindow            = user32.NewProc("IsHungAppWindow")
+	pGetWindowTextW             = user32.NewProc("GetWindowTextW")
+	pGetWindowTextLengthW       = user32.NewProc("GetWindowTextLengthW")
+	pGetWindow                  = user32.NewProc("GetWindow")
+	pGetAncestor                = user32.NewProc("GetAncestor")
+	pGetWindowLongPtrW          = user32.NewProc("GetWindowLongPtrW")
+	pGetWindowRect              = user32.NewProc("GetWindowRect")
+	pGetWindowThreadProcessId   = user32.NewProc("GetWindowThreadProcessId")
+	pGetShellWindow             = user32.NewProc("GetShellWindow")
+	pGetForegroundWindow        = user32.NewProc("GetForegroundWindow")
+	pSetForegroundWindow        = user32.NewProc("SetForegroundWindow")
+	pShowWindow                 = user32.NewProc("ShowWindow")
+	pSetWindowPos               = user32.NewProc("SetWindowPos")
+	pGetDC                      = user32.NewProc("GetDC")
+	pReleaseDC                  = user32.NewProc("ReleaseDC")
+	pPrintWindow                = user32.NewProc("PrintWindow")
+	pGetSystemMetrics           = user32.NewProc("GetSystemMetrics")
+	pGetGUIThreadInfo           = user32.NewProc("GetGUIThreadInfo")
+	pGetClassNameW              = user32.NewProc("GetClassNameW")
+	pSetWindowLongPtrW          = user32.NewProc("SetWindowLongPtrW")
+	pSetLayeredWindowAttributes = user32.NewProc("SetLayeredWindowAttributes")
+	pRedrawWindow               = user32.NewProc("RedrawWindow")
+	pIsZoomed                   = user32.NewProc("IsZoomed")
+	pMonitorFromWindow          = user32.NewProc("MonitorFromWindow")
+	pGetMonitorInfoW            = user32.NewProc("GetMonitorInfoW")
 
 	pCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
 	pCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
@@ -63,27 +68,30 @@ var (
 )
 
 const (
-	gwOwner         = 4
-	gaRootOwner     = 3
-	wsExToolWindow  = 0x00000080
-	wsExAppWindow   = 0x00040000
-	wsExTopmost     = 0x00000008
-	dwmExtFrame     = 9  // DWMWA_EXTENDED_FRAME_BOUNDS: the window without its invisible resize borders
-	dwmCloaked      = 14 // DWMWA_CLOAKED: on another virtual desktop, or a suspended store app
-	pwRenderFull    = 2  // PW_RENDERFULLCONTENT: also what the window draws with the graphics card
-	srcCopy         = 0x00CC0020
-	captureBlt      = 0x40000000
-	swRestore       = 9
-	swShowNoAct     = 4
-	swpNoSize       = 0x0001
-	swpNoMove       = 0x0002
-	swpNoActivate   = 0x0010
-	swpNoZOrder     = 0x0004
-	guiInMoveSize   = 0x0002 // GUITHREADINFO: the thread is moving or sizing a window
-	procQueryLtd    = 0x1000
-	maxTitle        = 200
-	minListedSize   = 40
-	maxWindowPixels = 8192
+	gwOwner           = 4
+	gaRootOwner       = 3
+	wsExToolWindow    = 0x00000080
+	wsExAppWindow     = 0x00040000
+	wsExTopmost       = 0x00000008
+	wsExLayered       = 0x00080000
+	lwaAlpha          = 0x2
+	swShowNormalNoAct = 4  // SW_SHOWNOACTIVATE: back from maximised or minimised, without the focus
+	dwmExtFrame       = 9  // DWMWA_EXTENDED_FRAME_BOUNDS: the window without its invisible resize borders
+	dwmCloaked        = 14 // DWMWA_CLOAKED: on another virtual desktop, or a suspended store app
+	pwRenderFull      = 2  // PW_RENDERFULLCONTENT: also what the window draws with the graphics card
+	srcCopy           = 0x00CC0020
+	captureBlt        = 0x40000000
+	swRestore         = 9
+	swShowNoAct       = 4
+	swpNoSize         = 0x0001
+	swpNoMove         = 0x0002
+	swpNoActivate     = 0x0010
+	swpNoZOrder       = 0x0004
+	guiInMoveSize     = 0x0002 // GUITHREADINFO: the thread is moving or sizing a window
+	procQueryLtd      = 0x1000
+	maxTitle          = 200
+	minListedSize     = 40
+	maxWindowPixels   = 8192
 )
 
 var gwlExStyle = ^uintptr(19) // GWL_EXSTYLE, -20
@@ -335,13 +343,83 @@ func fit(hwnd uintptr) {
 	pSetWindowPos.Call(hwnd, 0, uintptr(whole.left+dx), uintptr(whole.top+dy), 0, 0, swpNoSize|swpNoZOrder|swpNoActivate)
 }
 
-type winCapturer struct {
-	hwnd   uintptr
-	dc     uintptr // memory device context the window is printed into
+// dib is a bitmap in memory that windows are printed into: BGRA, rows from
+// the top.
+type dib struct {
+	dc     uintptr
 	bmp    uintptr
 	oldBmp uintptr
-	bits   unsafe.Pointer // BGRA, top-down
+	bits   unsafe.Pointer
 	w, h   int
+}
+
+func (d *dib) free() {
+	if d.bmp != 0 {
+		pSelectObject.Call(d.dc, d.oldBmp)
+		pDeleteObject.Call(d.bmp)
+		d.bmp, d.bits = 0, nil
+	}
+}
+
+func (d *dib) close() {
+	d.free()
+	if d.dc != 0 {
+		pDeleteDC.Call(d.dc)
+		d.dc = 0
+	}
+}
+
+// size makes the bitmap w x h, keeping it when it already is.
+func (d *dib) size(w, h int) error {
+	if d.dc == 0 {
+		if d.dc = call(pCreateCompatibleDC, 0); d.dc == 0 {
+			return errors.New("cannot create a drawing context")
+		}
+	}
+	if d.bmp != 0 && d.w == w && d.h == h {
+		return nil
+	}
+	d.free()
+	hdr := bitmapInfoHeader{
+		size: uint32(unsafe.Sizeof(bitmapInfoHeader{})), width: int32(w), height: int32(-h), // negative: rows from the top
+		planes: 1, bitCount: 32,
+	}
+	var bits unsafe.Pointer
+	bmp := call(pCreateDIBSection, d.dc, uintptr(unsafe.Pointer(&hdr)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
+	if bmp == 0 || bits == nil {
+		return fmt.Errorf("cannot create a %dx%d bitmap", w, h)
+	}
+	d.oldBmp = call(pSelectObject, d.dc, bmp)
+	d.bmp, d.bits, d.w, d.h = bmp, bits, w, h
+	return nil
+}
+
+func (d *dib) pixels() []byte { return unsafe.Slice((*byte)(d.bits), d.w*d.h*4) }
+
+// black reports whether the part r of the bitmap shows nothing but black,
+// which is what a picture that could not be taken looks like.
+func (d *dib) black(r rect) bool {
+	px := d.pixels()
+	stepX, stepY := max(1, int(r.right-r.left)/48), max(1, int(r.bottom-r.top)/48)
+	for y := int(r.top); y < int(r.bottom); y += stepY {
+		for x := int(r.left); x < int(r.right); x += stepX {
+			i := (y*d.w + x) * 4
+			if px[i] > 8 || px[i+1] > 8 || px[i+2] > 8 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+type winCapturer struct {
+	hwnd uintptr
+	pid  uint32
+	main dib // the window
+	part dib // one of its menus or dialogs, on its way into main
+
+	hidden  bool    // made invisible on this computer's screen (Hide)
+	exStyle uintptr // the window's extended style before that
 }
 
 // Open prepares capturing the window with the given id.
@@ -350,49 +428,17 @@ func (System) Open(id uint64) (Capturer, error) {
 	if call(pIsWindow, hwnd) == 0 {
 		return nil, ErrGone
 	}
-	if processID(hwnd) == uint32(call(pGetCurrentProcessId)) && !showOwn {
+	pid := processID(hwnd)
+	if pid == uint32(call(pGetCurrentProcessId)) && !showOwn {
 		return nil, errors.New("edgehop does not show its own windows")
 	}
-	dc := call(pCreateCompatibleDC, 0)
-	if dc == 0 {
-		return nil, errors.New("cannot create a drawing context")
-	}
-	return &winCapturer{hwnd: hwnd, dc: dc}, nil
-}
-
-func (c *winCapturer) freeBitmap() {
-	if c.bmp != 0 {
-		pSelectObject.Call(c.dc, c.oldBmp)
-		pDeleteObject.Call(c.bmp)
-		c.bmp, c.bits = 0, nil
-	}
+	return &winCapturer{hwnd: hwnd, pid: pid}, nil
 }
 
 func (c *winCapturer) Close() {
-	c.freeBitmap()
-	if c.dc != 0 {
-		pDeleteDC.Call(c.dc)
-		c.dc = 0
-	}
-}
-
-func (c *winCapturer) resize(w, h int) error {
-	if c.bmp != 0 && c.w == w && c.h == h {
-		return nil
-	}
-	c.freeBitmap()
-	hdr := bitmapInfoHeader{
-		size: uint32(unsafe.Sizeof(bitmapInfoHeader{})), width: int32(w), height: int32(-h), // negative: rows from the top
-		planes: 1, bitCount: 32,
-	}
-	var bits unsafe.Pointer
-	bmp := call(pCreateDIBSection, c.dc, uintptr(unsafe.Pointer(&hdr)), 0, uintptr(unsafe.Pointer(&bits)), 0, 0)
-	if bmp == 0 || bits == nil {
-		return fmt.Errorf("cannot create a %dx%d bitmap", w, h)
-	}
-	c.oldBmp = call(pSelectObject, c.dc, bmp)
-	c.bmp, c.bits, c.w, c.h = bmp, bits, w, h
-	return nil
+	c.Hide(false)
+	c.main.close()
+	c.part.close()
 }
 
 // origin is the top-left corner of the whole desktop: input.Injector counts
@@ -421,6 +467,68 @@ func onDesktop(r rect) bool {
 	return r.left >= x && r.top >= y && r.right <= x+metric(78) && r.bottom <= y+metric(79)
 }
 
+func className(hwnd uintptr) string {
+	var buf [64]uint16
+	n := call(pGetClassNameW, hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	return syscall.UTF16ToString(buf[:n])
+}
+
+// parts returns the windows that belong to this one and lie above it - its
+// menus, drop-down lists, tooltips and dialogs - from the lowest to the
+// topmost. To Windows they are windows of their own, so a picture of the
+// window alone would miss them.
+func (c *winCapturer) parts() []uintptr {
+	var out []uintptr
+	for _, hwnd := range topLevelWindows() { // from the topmost down
+		if hwnd == c.hwnd {
+			break // everything further down is below the window
+		}
+		if call(pIsWindowVisible, hwnd) == 0 || call(pIsIconic, hwnd) != 0 || cloaked(hwnd) {
+			continue
+		}
+		owned := call(pGetAncestor, hwnd, gaRootOwner) == c.hwnd
+		if !owned && !(processID(hwnd) == c.pid && className(hwnd) == "#32768") { // a menu of the same program
+			continue
+		}
+		out = append(out, hwnd)
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
+
+// overlay prints one of the window's parts and copies it into the picture
+// of the window, where the two overlap. whole is the window's rectangle.
+func (c *winCapturer) overlay(hwnd uintptr, whole rect) {
+	r, ok := windowRect(hwnd)
+	if !ok {
+		return
+	}
+	w, h := int(r.right-r.left), int(r.bottom-r.top)
+	if w <= 0 || h <= 0 || w > maxWindowPixels || h > maxWindowPixels || c.part.size(w, h) != nil {
+		return
+	}
+	if call(pIsHungAppWindow, hwnd) != 0 || call(pPrintWindow, hwnd, c.part.dc, pwRenderFull) == 0 {
+		return
+	}
+	pGdiFlush.Call()
+	// The part of it that people see: without the invisible resize borders.
+	vis := visibleRect(hwnd, r)
+	x0, y0 := max(vis.left, whole.left), max(vis.top, whole.top)
+	x1, y1 := min(vis.right, whole.right), min(vis.bottom, whole.bottom)
+	if x0 >= x1 || y0 >= y1 {
+		return
+	}
+	src, dst := c.part.pixels(), c.main.pixels()
+	n := int(x1-x0) * 4
+	for y := y0; y < y1; y++ {
+		s := (int(y-r.top)*w + int(x0-r.left)) * 4
+		d := (int(y-whole.top)*c.main.w + int(x0-whole.left)) * 4
+		copy(dst[d:d+n], src[s:s+n])
+	}
+}
+
 func (c *winCapturer) Capture(f *Frame) error {
 	if call(pIsWindow, c.hwnd) == 0 {
 		return ErrGone
@@ -439,34 +547,47 @@ func (c *winCapturer) Capture(f *Frame) error {
 	if w <= 0 || h <= 0 || w > maxWindowPixels || h > maxWindowPixels {
 		return fmt.Errorf("the window has an unusable size (%dx%d)", w, h)
 	}
-	if err := c.resize(w, h); err != nil {
+	if err := c.main.size(w, h); err != nil {
 		return err
 	}
-	// A window in use is taken from the screen: its menus, drop-down lists
-	// and dialogs are windows of their own and would be missing from a
-	// picture of the window alone. A window in the background is asked to
-	// draw itself, so it shows even while other windows cover it.
-	// (Only a window that is completely on the screen can be taken from it.)
 	vis := visibleRect(c.hwnd, whole)
-	fromScreen := c.Front() && onDesktop(vis)
-	printed := false
-	if !fromScreen && call(pIsHungAppWindow, c.hwnd) == 0 { // a frozen program never answers
-		printed = call(pPrintWindow, c.hwnd, c.dc, pwRenderFull) != 0
-	}
-	if !printed {
-		screen := call(pGetDC, 0)
-		call(pBitBlt, c.dc, 0, 0, uintptr(w), uintptr(h), screen, uintptr(whole.left), uintptr(whole.top), srcCopy|captureBlt)
-		pReleaseDC.Call(0, screen)
-	}
-	pGdiFlush.Call()
+	inner := rect{vis.left - whole.left, vis.top - whole.top, vis.right - whole.left, vis.bottom - whole.top}
 
-	cx, cy := int(vis.left-whole.left), int(vis.top-whole.top)
-	cw, ch := int(vis.right-vis.left), int(vis.bottom-vis.top)
-	src := unsafe.Slice((*byte)(c.bits), w*h*4)
+	// The window is asked to draw itself: that works while other windows
+	// cover it and while it is hidden (see Hide). Its menus and dialogs are
+	// added on top.
+	printed := false
+	onScreen := !c.hidden && c.Front() && onDesktop(vis)
+	// The apps that come with Windows ("Settings", "Calculator") print
+	// themselves half black; for them the screen is the better source.
+	storeApp := onScreen && className(c.hwnd) == "ApplicationFrameWindow"
+	if !storeApp && call(pIsHungAppWindow, c.hwnd) == 0 { // a frozen program never answers
+		printed = call(pPrintWindow, c.hwnd, c.main.dc, pwRenderFull) != 0
+		pGdiFlush.Call()
+	}
+	blank := !printed || c.main.black(inner)
+	if !blank {
+		for _, part := range c.parts() {
+			c.overlay(part, whole)
+		}
+	} else if onScreen {
+		// Some programs give no picture that way. As long as the window is
+		// in use and fully on the screen, the screen itself has it.
+		screen := call(pGetDC, 0)
+		call(pBitBlt, c.main.dc, 0, 0, uintptr(w), uintptr(h), screen, uintptr(whole.left), uintptr(whole.top), srcCopy|captureBlt)
+		pReleaseDC.Call(0, screen)
+		pGdiFlush.Call()
+		blank = c.main.black(inner)
+	}
+
+	cx, cy := int(inner.left), int(inner.top)
+	cw, ch := int(inner.right-inner.left), int(inner.bottom-inner.top)
+	src := c.main.pixels()
 	f.Pix = grow(f.Pix, cw*ch*4)
 	f.W, f.H = cw, ch
 	f.X, f.Y = int(vis.left)-ox, int(vis.top)-oy
 	f.Title = title(c.hwnd)
+	f.Blank = blank
 	for y := 0; y < ch; y++ {
 		s := src[((cy+y)*w+cx)*4 : ((cy+y)*w+cx+cw)*4]
 		d := f.Pix[y*cw*4 : (y+1)*cw*4]
@@ -498,4 +619,144 @@ func (c *winCapturer) Raise() {
 		pSetWindowPos.Call(c.hwnd, ^uintptr(1), 0, 0, 0, 0, flags) // HWND_NOTOPMOST
 	}
 	pSetForegroundWindow.Call(c.hwnd)
+}
+
+// Resize gives the visible part of the window the size w x h, as far as the
+// window and its screen allow.
+func (c *winCapturer) Resize(w, h int) {
+	if call(pIsWindow, c.hwnd) == 0 || call(pIsIconic, c.hwnd) != 0 {
+		return
+	}
+	if call(pIsZoomed, c.hwnd) != 0 {
+		pShowWindow.Call(c.hwnd, swShowNormalNoAct) // a maximised window has one size only
+	}
+	whole, ok := windowRect(c.hwnd)
+	if !ok {
+		return
+	}
+	vis := visibleRect(c.hwnd, whole)
+	mi := monitorInfo{size: uint32(unsafe.Sizeof(monitorInfo{}))}
+	if mon := call(pMonitorFromWindow, c.hwnd, 2); mon != 0 && call(pGetMonitorInfoW, mon, uintptr(unsafe.Pointer(&mi))) != 0 {
+		w = min(w, int(mi.work.right-mi.work.left))
+		h = min(h, int(mi.work.bottom-mi.work.top))
+	}
+	w, h = max(w, 160), max(h, 120)
+	if w == int(vis.right-vis.left) && h == int(vis.bottom-vis.top) {
+		return
+	}
+	// The window is a little larger than what one sees of it.
+	extraW := int(whole.right-whole.left) - int(vis.right-vis.left)
+	extraH := int(whole.bottom-whole.top) - int(vis.bottom-vis.top)
+	pSetWindowPos.Call(c.hwnd, 0, 0, 0, uintptr(w+extraW), uintptr(h+extraH), swpNoMove|swpNoZOrder|swpNoActivate)
+	fit(c.hwnd)
+}
+
+// Hide makes the window invisible on this computer's screen while it stays
+// where it is, keeps drawing and keeps taking clicks - for a window that was
+// "moved" to another computer. Hide(false) shows it again.
+//
+// It is done by making the window almost completely transparent. Windows
+// that already use transparency of their own are left alone.
+func (c *winCapturer) Hide(on bool) {
+	if on == c.hidden || call(pIsWindow, c.hwnd) == 0 {
+		c.hidden = c.hidden && on
+		return
+	}
+	if !on {
+		unhide(c.hwnd, c.exStyle)
+		forgetHidden(c.hwnd)
+		c.hidden = false
+		return
+	}
+	ex := call(pGetWindowLongPtrW, c.hwnd, gwlExStyle)
+	if ex&wsExLayered != 0 {
+		return // it has its own transparency; changing that could not be undone exactly
+	}
+	rememberHidden(c.hwnd, c.pid, ex) // first: whatever happens next, it can be undone
+	pSetWindowLongPtrW.Call(c.hwnd, gwlExStyle, ex|wsExLayered)
+	if call(pSetLayeredWindowAttributes, c.hwnd, 0, 1, lwaAlpha) == 0 { // 1 of 255: invisible, but still clickable
+		pSetWindowLongPtrW.Call(c.hwnd, gwlExStyle, ex)
+		forgetHidden(c.hwnd)
+		return
+	}
+	c.hidden, c.exStyle = true, ex
+}
+
+// unhide undoes Hide for a window whose extended style was ex before.
+func unhide(hwnd, ex uintptr) {
+	pSetLayeredWindowAttributes.Call(hwnd, 0, 255, lwaAlpha)
+	if ex&wsExLayered == 0 {
+		now := call(pGetWindowLongPtrW, hwnd, gwlExStyle)
+		pSetWindowLongPtrW.Call(hwnd, gwlExStyle, now&^wsExLayered)
+	}
+	pRedrawWindow.Call(hwnd, 0, 0, 0x0001|0x0080|0x0400) // RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_FRAME
+}
+
+// A hidden window must come back even if edgehop is killed while it is
+// hidden. So each one is written down, and the list is worked off the next
+// time edgehop starts.
+
+var hiddenMu sync.Mutex
+
+func hiddenFile() string { return filepath.Join(os.TempDir(), "edgehop-hidden-windows.txt") }
+
+func readHidden() map[uintptr][2]uintptr { // window -> process id, extended style
+	out := map[uintptr][2]uintptr{}
+	data, err := os.ReadFile(hiddenFile())
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		var hwnd, pid, ex uint64
+		if n, _ := fmt.Sscanf(line, "%d %d %d", &hwnd, &pid, &ex); n == 3 {
+			out[uintptr(hwnd)] = [2]uintptr{uintptr(pid), uintptr(ex)}
+		}
+	}
+	return out
+}
+
+func writeHidden(list map[uintptr][2]uintptr) {
+	if len(list) == 0 {
+		os.Remove(hiddenFile())
+		return
+	}
+	var b strings.Builder
+	for hwnd, v := range list {
+		fmt.Fprintf(&b, "%d %d %d\n", hwnd, v[0], v[1])
+	}
+	os.WriteFile(hiddenFile(), []byte(b.String()), 0o600)
+}
+
+func rememberHidden(hwnd uintptr, pid uint32, ex uintptr) {
+	hiddenMu.Lock()
+	defer hiddenMu.Unlock()
+	list := readHidden()
+	list[hwnd] = [2]uintptr{uintptr(pid), ex}
+	writeHidden(list)
+}
+
+func forgetHidden(hwnd uintptr) {
+	hiddenMu.Lock()
+	defer hiddenMu.Unlock()
+	list := readHidden()
+	delete(list, hwnd)
+	writeHidden(list)
+}
+
+// RestoreHidden shows the windows again that an earlier run of edgehop left
+// hidden. It returns how many there were.
+func RestoreHidden() int {
+	hiddenMu.Lock()
+	defer hiddenMu.Unlock()
+	n := 0
+	for hwnd, v := range readHidden() {
+		// The number of a closed window can be given to a new one; only touch
+		// it if it still belongs to the same program.
+		if call(pIsWindow, hwnd) != 0 && uintptr(processID(hwnd)) == v[0] {
+			unhide(hwnd, v[1])
+			n++
+		}
+	}
+	os.Remove(hiddenFile())
+	return n
 }

@@ -26,15 +26,17 @@ type Conn interface {
 // Messages on a view connection. The first byte is the type.
 const (
 	// viewer -> source
-	mList    = 1 // which windows are there?
-	mStart   = 2 // show this window: id u64
-	mPointer = 3 // x u16, y u16: a position in the picture, 0..65535 on both axes
-	mButton  = 4 // x u16, y u16, button u8, down u8
-	mWheel   = 5 // x u16, y u16, dx i16, dy i16 (1/120 of a notch)
-	mKey     = 6 // code u16, state u8
-	mAck     = 7 // seq u32: update seq is on the screen, send the next one
-	mRelease = 8 // let go of every key and button (the viewer lost the focus)
-	mFront   = 9 // bring the window to the front and fully onto its screen
+	mList    = 1  // which windows are there?
+	mStart   = 2  // show this window: id u64
+	mPointer = 3  // x u16, y u16: a position in the picture, 0..65535 on both axes
+	mButton  = 4  // x u16, y u16, button u8, down u8
+	mWheel   = 5  // x u16, y u16, dx i16, dy i16 (1/120 of a notch)
+	mKey     = 6  // code u16, state u8
+	mAck     = 7  // seq u32: update seq is on the screen, send the next one
+	mRelease = 8  // let go of every key and button (the viewer lost the focus)
+	mFront   = 9  // bring the window to the front and fully onto its screen
+	mResize  = 10 // give the window this size: w u16, h u16
+	mHide    = 11 // u8: 1 hides the window on its own screen while it is shown here, 0 shows it
 
 	// source -> viewer
 	mWindows = 0x20 // JSON: the window list

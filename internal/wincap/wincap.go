@@ -28,6 +28,8 @@ type Frame struct {
 	// one unit of those coordinates.
 	X, Y  int
 	Title string
+	// Blank: no way of taking the picture gave anything but black.
+	Blank bool
 }
 
 // Capturer takes pictures of one window.
@@ -39,6 +41,11 @@ type Capturer interface {
 	// Raise brings the window in front of the others, so that clicks at its
 	// position reach it.
 	Raise()
+	// Resize gives the window the size w x h, as far as it allows.
+	Resize(w, h int)
+	// Hide makes the window invisible on its own screen while it keeps
+	// working, or shows it again. Closing the capturer shows it again too.
+	Hide(on bool)
 	Close()
 }
 

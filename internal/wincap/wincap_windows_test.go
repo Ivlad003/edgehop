@@ -321,6 +321,27 @@ func TestLiveClickReachesTheWindow(t *testing.T) {
 	if got := pixel(&f, f.W/2, f.H-40); got != testColor {
 		t.Errorf("picture from the screen: the window's colour is %v, want %v", got, testColor)
 	}
+	// Hidden on its own screen, the window still takes a click and still
+	// gives its picture.
+	c.Hide(true)
+	time.Sleep(200 * time.Millisecond)
+	inj.MoveAbs(f.X+px-30, f.Y+py)
+	time.Sleep(100 * time.Millisecond)
+	inj.Button(keys.ButtonLeft, true)
+	inj.Button(keys.ButtonLeft, false)
+	select {
+	case got := <-testClicks:
+		if got[0] != f.X+px-30+ox || got[1] != f.Y+py+oy {
+			t.Errorf("the click on the hidden window arrived at %v, want %d,%d", got, f.X+px-30+ox, f.Y+py+oy)
+		}
+	case <-time.After(3 * time.Second):
+		t.Error("the click did not reach the hidden window")
+	}
+	if err := c.Capture(&f); err != nil || pixel(&f, f.W/2, f.H-40) != testColor {
+		t.Errorf("picture of the hidden window: %v, colour %v", err, pixel(&f, f.W/2, f.H-40))
+	}
+	c.Hide(false)
+	time.Sleep(100 * time.Millisecond)
 	inj.Key(keys.A, keys.Down)
 	inj.Key(keys.A, keys.Up)
 	select {
@@ -412,5 +433,234 @@ func TestLiveDraggedWindowIsRecognised(t *testing.T) {
 	whole, _ := windowRect(hwnd)
 	if vis := visibleRect(hwnd, whole); int(vis.right) > right {
 		t.Errorf("after raising, the window still ends at x=%d, beyond the screen edge %d", vis.right, right)
+	}
+}
+
+// A second kind of test window: a pop-up that belongs to another window, as
+// a menu or a dialog does, in a colour of its own.
+
+var (
+	popupColor        = [3]byte{20, 180, 60}
+	popupBrush        uintptr
+	popupProc         = syscall.NewCallback(popupWndProc)
+	popupClassCreated bool
+	popupClassName, _ = syscall.UTF16PtrFromString("edgehopWincapPopup")
+)
+
+func popupWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
+	fill := func(hdc uintptr) {
+		var rc rect
+		tGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+		tFillRect.Call(hdc, uintptr(unsafe.Pointer(&rc)), popupBrush)
+	}
+	switch msg {
+	case 0x000F: // WM_PAINT
+		var ps paintStruct
+		hdc, _, _ := tBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		fill(hdc)
+		tEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
+		return 0
+	case 0x0318: // WM_PRINTCLIENT
+		fill(wParam)
+		return 0
+	case 0x0014: // WM_ERASEBKGND
+		return 1
+	case 0x0002: // WM_DESTROY
+		tPostQuitMessage.Call(0)
+		return 0
+	}
+	r, _, _ := tDefWindowProcW.Call(hwnd, msg, wParam, lParam)
+	return r
+}
+
+// openPopup shows a borderless pop-up owned by owner.
+func openPopup(t *testing.T, owner uintptr, x, y, w, h int) uintptr {
+	t.Helper()
+	ready := make(chan uintptr, 1)
+	done := make(chan struct{})
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		defer close(done)
+		inst, _, _ := tGetModuleHandleW.Call(0)
+		if !popupClassCreated {
+			popupBrush, _, _ = tCreateSolidBrush.Call(uintptr(popupColor[0]) | uintptr(popupColor[1])<<8 | uintptr(popupColor[2])<<16)
+			wc := wndClassEx{wndProc: popupProc, instance: inst, className: popupClassName}
+			wc.size = uint32(unsafe.Sizeof(wc))
+			if r, _, err := tRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc))); r == 0 {
+				t.Errorf("RegisterClassEx: %v", err)
+				ready <- 0
+				return
+			}
+			popupClassCreated = true
+		}
+		const popup = 0x80000000 // WS_POPUP
+		hwnd, _, err := tCreateWindowExW.Call(0x08000000, uintptr(unsafe.Pointer(popupClassName)), 0,
+			popup, uintptr(x), uintptr(y), uintptr(w), uintptr(h), owner, 0, inst, 0)
+		if hwnd == 0 {
+			t.Errorf("CreateWindowEx (pop-up): %v", err)
+		} else {
+			tShowWindow.Call(hwnd, 4) // SW_SHOWNOACTIVATE
+		}
+		ready <- hwnd
+		if hwnd == 0 {
+			return
+		}
+		var m testMsg
+		for {
+			r, _, _ := tGetMessageW.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
+			if int32(r) <= 0 {
+				return
+			}
+			tDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+		}
+	}()
+	hwnd := <-ready
+	if hwnd == 0 {
+		t.FailNow()
+	}
+	t.Cleanup(func() {
+		tPostMessageW.Call(hwnd, 0x0010, 0, 0)
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+	})
+	return hwnd
+}
+
+// offScreen is a place beside the visible desktop, so the tests do not flash
+// windows in front of whoever uses the computer.
+func offScreen() int {
+	vx, _, _ := pGetSystemMetrics.Call(76)
+	vw, _, _ := pGetSystemMetrics.Call(78)
+	return int(int32(vx)) + int(int32(vw)) + 200
+}
+
+func captureUntil(t *testing.T, c Capturer, f *Frame, ok func() bool) bool {
+	t.Helper()
+	for i := 0; i < 60; i++ {
+		if err := c.Capture(f); err != nil {
+			t.Fatal(err)
+		}
+		if ok() {
+			return true
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	return false
+}
+
+// What belongs to a window - a menu, a dialog - is a window of its own to
+// Windows. The picture of the window must show it all the same.
+func TestPictureIncludesTheWindowsPopups(t *testing.T) {
+	showOwn = true
+	defer func() { showOwn = false }()
+	x := 120
+	if !live() {
+		x = offScreen()
+	}
+	hwnd := openTestWindow(t, x, 120, 420, 320)
+	var sys System
+	c, err := sys.Open(uint64(hwnd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var f Frame
+	if !captureUntil(t, c, &f, func() bool { return pixel(&f, f.W/2, f.H-40) == testColor }) {
+		t.Fatal("no picture of the window")
+	}
+	ox, oy := origin()
+	// A pop-up over the lower right part of the window, hanging out of it.
+	px, py := f.X+ox+f.W-120, f.Y+oy+f.H-100
+	openPopup(t, hwnd, px, py, 200, 60)
+	inside := func() [3]byte { return pixel(&f, f.W-60, f.H-70) }
+	if !captureUntil(t, c, &f, func() bool { return inside() == popupColor }) {
+		t.Fatalf("the pop-up is missing from the picture: %v there, want %v", inside(), popupColor)
+	}
+	if got := pixel(&f, 40, f.H-40); got != testColor {
+		t.Errorf("beside the pop-up the picture shows %v, want the window's colour %v", got, testColor)
+	}
+	if f.Blank {
+		t.Error("the picture was reported as blank")
+	}
+}
+
+// A hidden window is not visible on its screen but still gives its picture;
+// it comes back when shown again, when the capturer is closed, and - should
+// edgehop have been killed meanwhile - the next time edgehop starts.
+func TestHiddenWindowKeepsItsPictureAndComesBack(t *testing.T) {
+	showOwn = true
+	defer func() { showOwn = false }()
+	x := 140
+	if !live() {
+		x = offScreen()
+	}
+	hwnd := openTestWindow(t, x, 140, 420, 320)
+	layered := func() bool { return call(pGetWindowLongPtrW, hwnd, gwlExStyle)&wsExLayered != 0 }
+	listed := func() bool { _, ok := readHidden()[hwnd]; return ok }
+	var sys System
+	c, err := sys.Open(uint64(hwnd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f Frame
+	if !captureUntil(t, c, &f, func() bool { return pixel(&f, f.W/2, f.H-40) == testColor }) {
+		t.Fatal("no picture of the window")
+	}
+
+	c.Hide(true)
+	if !layered() || !listed() {
+		t.Fatalf("hidden: transparent %v, written down %v", layered(), listed())
+	}
+	time.Sleep(150 * time.Millisecond)
+	if err := c.Capture(&f); err != nil || pixel(&f, f.W/2, f.H-40) != testColor || f.Blank {
+		t.Errorf("picture of the hidden window: %v, %v, blank %v", err, pixel(&f, f.W/2, f.H-40), f.Blank)
+	}
+	c.Hide(false)
+	if layered() || listed() {
+		t.Errorf("shown again: transparent %v, written down %v", layered(), listed())
+	}
+
+	// Closing the capturer shows the window again too.
+	c.Hide(true)
+	c.Close()
+	if layered() || listed() {
+		t.Errorf("after closing: transparent %v, written down %v", layered(), listed())
+	}
+
+	// And if edgehop dies while a window is hidden, the next start finds it.
+	c2, err := sys.Open(uint64(hwnd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2.Hide(true) // ... and c2 is never closed: that is the crash
+	if n := RestoreHidden(); n != 1 || layered() || listed() {
+		t.Errorf("restored %d windows; transparent %v, written down %v", n, layered(), listed())
+	}
+}
+
+func TestWindowTakesTheSizeItIsGiven(t *testing.T) {
+	showOwn = true
+	defer func() { showOwn = false }()
+	x := 160
+	if !live() {
+		x = offScreen()
+	}
+	hwnd := openTestWindow(t, x, 160, 420, 320)
+	var sys System
+	c, err := sys.Open(uint64(hwnd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var f Frame
+	if err := c.Capture(&f); err != nil {
+		t.Fatal(err)
+	}
+	c.Resize(520, 260)
+	if !captureUntil(t, c, &f, func() bool { return f.W == 520 && f.H == 260 }) {
+		t.Fatalf("after Resize(520, 260) the window is %dx%d", f.W, f.H)
 	}
 }

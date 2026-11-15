@@ -117,7 +117,7 @@ func (v *Viewer) URL() string {
 // it carries the access code and leads on to the page of that window. The
 // window is brought to the front over there, as it would be after a click.
 func (v *Viewer) WindowURL(peer string, window uint64) string {
-	page := "view.html?" + url.Values{"peer": {peer}, "win": {strconv.FormatUint(window, 10)}, "front": {"1"}}.Encode()
+	page := "view.html?" + url.Values{"peer": {peer}, "win": {strconv.FormatUint(window, 10)}, "front": {"1"}, "hide": {"1"}}.Encode()
 	return fmt.Sprintf("http://%s/?%s", v.ln.Addr(), url.Values{"t": {v.token}, "go": {page}}.Encode())
 }
 
@@ -337,6 +337,9 @@ func (v *Viewer) handleStream(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("front") == "1" {
 		st.send([]byte{mFront})
 	}
+	if r.URL.Query().Get("hide") == "1" {
+		st.send([]byte{mHide, 1})
+	}
 	for {
 		msg, err := conn.Recv()
 		if err != nil {
@@ -426,6 +429,7 @@ const (
 	evKey     = 4 // code, state
 	evRelease = 5 //
 	evAck     = 6 // seq
+	evResize  = 7 // width, height: the size the window should take
 )
 
 func encodeInput(e []json.Number, remap map[uint16]uint16) ([]byte, error) {
@@ -498,6 +502,16 @@ func encodeInput(e []json.Number, remap map[uint16]uint16) ([]byte, error) {
 		return append(be.AppendUint16([]byte{mKey}, c), byte(state)), nil
 	case evRelease:
 		return []byte{mRelease}, nil
+	case evResize:
+		w, err := arg(1, 1, 0xFFFF)
+		if err != nil {
+			return nil, err
+		}
+		h, err := arg(2, 1, 0xFFFF)
+		if err != nil {
+			return nil, err
+		}
+		return be.AppendUint16(be.AppendUint16([]byte{mResize}, uint16(w)), uint16(h)), nil
 	case evAck:
 		seq, err := arg(1, 0, 0xFFFFFFFF)
 		if err != nil {

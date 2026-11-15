@@ -15,6 +15,9 @@ func (System) List() ([]Window, error) { return nil, errUnsupported }
 // Open prepares capturing the window with the given id.
 func (System) Open(id uint64) (Capturer, error) { return nil, errUnsupported }
 
+// RestoreHidden has nothing to do on this system.
+func RestoreHidden() int { return 0 }
+
 // Dragged returns the window the user is moving with the mouse right now.
 // This system offers no way to tell, so dragging a window to another
 // computer starts only on Windows.

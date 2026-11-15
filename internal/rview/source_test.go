@@ -67,6 +67,9 @@ type fakeDesk struct {
 	front  bool
 	raises int
 	raised bool // whether raising brings the window to the front
+	hidden bool
+	blank  bool
+	sizes  [][2]int // what the window was asked to become
 	closed bool
 }
 
@@ -115,6 +118,7 @@ func (d *fakeDesk) Capture(f *wincap.Frame) error {
 	}
 	f.Pix = append(f.Pix[:0], d.pix...)
 	f.W, f.H, f.X, f.Y, f.Title = d.w, d.h, d.x, d.y, d.title
+	f.Blank = d.blank
 	return nil
 }
 
@@ -129,6 +133,24 @@ func (d *fakeDesk) Raise() {
 	defer d.mu.Unlock()
 	d.raises++
 	d.front = d.raised
+}
+
+// Resize makes the window that size, as a real one would.
+func (d *fakeDesk) Resize(w, h int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sizes = append(d.sizes, [2]int{w, h})
+	d.w, d.h = w, h
+	d.pix = make([]byte, w*h*4)
+	for i := 3; i < len(d.pix); i += 4 {
+		d.pix[i] = 0xFF
+	}
+}
+
+func (d *fakeDesk) Hide(on bool) {
+	d.mu.Lock()
+	d.hidden = on
+	d.mu.Unlock()
 }
 
 func (d *fakeDesk) Close() {
@@ -653,4 +675,41 @@ func TestStillPartsAreSharpenedWhileOthersKeepChanging(t *testing.T) {
 			v.ack(up.seq)
 		}
 	}
+}
+
+// The viewer can give the window a size, hide it on its own screen, and is
+// told when the window gives no picture.
+func TestResizeHideAndBlank(t *testing.T) {
+	desk := newDesk(200, 120)
+	v := startSource(t, desk, &fakeInjector{})
+	size := func(w, h uint16) []byte { return be.AppendUint16(be.AppendUint16([]byte{mResize}, w), h) }
+	v.conn.Send(size(300, 200)) // before a window is shown: nothing to resize
+	v.start()
+	v.sharp(desk)
+
+	v.conn.Send([]byte{mHide, 1})
+	eventually(t, "the window to be hidden", func() bool { desk.mu.Lock(); defer desk.mu.Unlock(); return desk.hidden })
+	v.conn.Send(size(320, 160))
+	v.sharp(desk)
+	desk.mu.Lock()
+	sizes := fmt.Sprint(desk.sizes)
+	desk.mu.Unlock()
+	if sizes != "[[320 160]]" || v.meta.W != 320 || v.meta.H != 160 {
+		t.Errorf("asked sizes %s, picture %dx%d", sizes, v.meta.W, v.meta.H)
+	}
+	v.conn.Send([]byte{mHide, 0})
+	eventually(t, "the window to be shown again", func() bool { desk.mu.Lock(); defer desk.mu.Unlock(); return !desk.hidden })
+
+	if v.meta.Blank {
+		t.Error("reported blank although it has a picture")
+	}
+	desk.mu.Lock()
+	desk.blank = true
+	desk.mu.Unlock()
+	eventually(t, "the viewer to be told that the window is blank", func() bool {
+		if up := v.next(50 * time.Millisecond); up != nil {
+			v.ack(up.seq)
+		}
+		return v.meta.Blank
+	})
 }
