@@ -87,15 +87,3 @@ func area(rects []image.Rectangle) int {
 	}
 	return n
 }
-
-// markTiles sets the tiles touched by the rectangles to v.
-func markTiles(tiles []bool, rects []image.Rectangle, w, h int, v bool) {
-	tw, _ := tilesFor(w, h)
-	for _, r := range rects {
-		for ty := r.Min.Y / tileSize; ty*tileSize < r.Max.Y; ty++ {
-			for tx := r.Min.X / tileSize; tx*tileSize < r.Max.X; tx++ {
-				tiles[ty*tw+tx] = v
-			}
-		}
-	}
-}

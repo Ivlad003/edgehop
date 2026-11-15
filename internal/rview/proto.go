@@ -34,6 +34,7 @@ const (
 	mKey     = 6 // code u16, state u8
 	mAck     = 7 // seq u32: update seq is on the screen, send the next one
 	mRelease = 8 // let go of every key and button (the viewer lost the focus)
+	mFront   = 9 // bring the window to the front and fully onto its screen
 
 	// source -> viewer
 	mWindows = 0x20 // JSON: the window list

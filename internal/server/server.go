@@ -78,6 +78,14 @@ type Config struct {
 	// clients that allow it (remote windows, experimental), so their
 	// settings pages can say whether this side is ready.
 	ShowsWindows bool
+
+	// OnWindowDrag, when set, is called when the user pushed a window of a
+	// client against the edge towards this computer and the cursor came
+	// over with it (see drag.go). DragHold and DragPush tune the gesture;
+	// zero means the defaults.
+	OnWindowDrag func(DraggedWindow)
+	DragHold     time.Duration
+	DragPush     float64
 }
 
 // autoScale returns how much faster the cursor should move on a client whose
@@ -138,6 +146,7 @@ func (s *session) send(b []byte) {
 type ctlMsg struct {
 	connect bool
 	sess    *session
+	drag    *dragReply // set: not a connect or disconnect, but an answer about a dragged window
 }
 
 // Server is the input router.
@@ -153,7 +162,9 @@ type Server struct {
 	idMu sync.RWMutex
 	byID map[uint32]*session
 
-	views viewHub // remote windows (experimental)
+	views   viewHub   // remote windows (experimental)
+	drag    dragState // run loop only: a window pushed against the edge
+	dragSeq uint32
 
 	warnMu sync.Mutex
 	warned map[string]time.Time
@@ -577,6 +588,13 @@ func (s *Server) handleConn(conn net.Conn) {
 			if s.clip != nil {
 				s.clip.clientState(sess, m.Changed)
 			}
+		case proto.TDragReply:
+			reply := &dragReply{id: m.Bundle, window: m.T, w: int(m.W), h: int(m.H)}
+			select {
+			case s.ctl <- ctlMsg{sess: sess, drag: reply}:
+			case <-s.done:
+				return
+			}
 		}
 	}
 }
@@ -648,6 +666,10 @@ func (s *Server) setFocus(sess *session) {
 
 func (s *Server) handleCtl(m ctlMsg) {
 	sess := m.sess
+	if m.drag != nil {
+		s.dragAnswered(sess, *m.drag)
+		return
+	}
 	if m.connect {
 		if old := s.byName[sess.name]; old != nil {
 			logx.Infof("%s reconnected; dropping its old connection", sess.name)
@@ -863,7 +885,13 @@ func (s *Server) motion(dx, dy float64) {
 	ny := s.cy + dy*sess.scale
 	maxX, maxY := float64(sess.w-1), float64(sess.h-1)
 
-	// Never switch screens in the middle of a drag.
+	// Never switch screens in the middle of a drag - unless it is a window
+	// being pushed over to this computer, which dragPushed watches for.
+	if s.buttons != 0 {
+		s.dragPushed(sess, nx, ny, maxX, maxY)
+	} else {
+		s.drag = dragState{}
+	}
 	if s.buttons == 0 {
 		if nx < 0 && s.cross(sess, layout.Left, nx, ny) {
 			return

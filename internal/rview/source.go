@@ -122,6 +122,12 @@ func (s *Source) Serve(conn Conn) {
 				default:
 				}
 			}
+		case mFront:
+			v.mu.Lock()
+			if v.cap != nil {
+				v.cap.Raise()
+			}
+			v.mu.Unlock()
 		case mPointer, mButton, mWheel, mKey, mRelease:
 			v.input(msg)
 		}
@@ -229,17 +235,17 @@ func (v *view) pictures(c wincap.Capturer) {
 		slow = defaultSlow
 	}
 	var (
-		cur, prev  wincap.Frame
-		dirty      []bool
-		lossy      []bool // tiles the viewer has only a blurry version of
-		anyLossy   bool
-		lastChange time.Time
-		lastMeta   metaInfo
-		seq        uint32
-		failures   int
-		enc        bytes.Buffer
-		buf        []byte
-		pngEnc     = png.Encoder{CompressionLevel: png.BestSpeed}
+		cur, prev wincap.Frame
+		dirty     []bool
+		lossyAt   []time.Time // per tile: since when the viewer has only a blurry version (zero: sharp)
+		refine    []bool
+		anyLossy  bool
+		lastMeta  metaInfo
+		seq       uint32
+		failures  int
+		enc       bytes.Buffer
+		buf       []byte
+		pngEnc    = png.Encoder{CompressionLevel: png.BestSpeed}
 	)
 	for first := true; ; first = false {
 		if !first {
@@ -281,49 +287,75 @@ func (v *view) pictures(c wincap.Capturer) {
 		}
 
 		tw, th := tilesFor(w, h)
-		var rects []image.Rectangle
-		format := uint8(fmtPNG)
-		switch {
-		case resized:
-			dirty, lossy = make([]bool, tw*th), make([]bool, tw*th)
-			rects = []image.Rectangle{image.Rect(0, 0, w, h)}
-		default:
-			if changedTiles(prev.Pix, cur.Pix, w, h, dirty) > 0 {
-				rects = rectsOf(dirty, w, h)
+		now := time.Now()
+		var changed []image.Rectangle
+		if resized {
+			dirty, refine, lossyAt = make([]bool, tw*th), make([]bool, tw*th), make([]time.Time, tw*th)
+			for i := range dirty {
+				dirty[i] = true
 			}
+			changed = []image.Rectangle{image.Rect(0, 0, w, h)}
+		} else if changedTiles(prev.Pix, cur.Pix, w, h, dirty) > 0 {
+			changed = rectsOf(dirty, w, h)
 		}
-		switch {
-		case len(rects) > 0:
-			lastChange = time.Now()
-			v.active.Store(lastChange.UnixNano())
-			if float64(area(rects)) > lossyAbove*float64(w*h) {
+		format := uint8(fmtPNG)
+		if len(changed) > 0 {
+			v.active.Store(now.UnixNano())
+			if float64(area(changed)) > lossyAbove*float64(w*h) {
 				format = fmtJPEG
 			}
-			markTiles(lossy, rects, w, h, format == fmtJPEG)
-			anyLossy = anyLossy || format == fmtJPEG
-		case anyLossy && time.Since(lastChange) > refineAfter:
-			// Nothing moves any more: send the blurry parts again, sharp.
-			rects = rectsOf(lossy, w, h)
-			clear(lossy)
-			anyLossy = false
-		}
-		if len(rects) == 0 {
-			continue
-		}
-		if format == fmtPNG && anyLossy {
-			// A sharp update covers some tiles; others may still be blurry.
-			anyLossy = false
-			for _, l := range lossy {
-				anyLossy = anyLossy || l
+			// The rectangles can cover more tiles than changed; all of them are
+			// sent anew, so all of them are blurry or sharp now.
+			for _, r := range changed {
+				for ty := r.Min.Y / tileSize; ty*tileSize < r.Max.Y; ty++ {
+					for tx := r.Min.X / tileSize; tx*tileSize < r.Max.X; tx++ {
+						dirty[ty*tw+tx] = true
+						if format == fmtJPEG {
+							lossyAt[ty*tw+tx] = now
+						} else {
+							lossyAt[ty*tw+tx] = time.Time{}
+						}
+					}
+				}
 			}
+		}
+		// Parts that were sent blurry and have been still for a moment are sent
+		// again, sharp - also while something else in the window keeps moving.
+		var sharpen []image.Rectangle
+		anyLossy = false
+		stale := false
+		for i, at := range lossyAt {
+			refine[i] = false
+			if at.IsZero() {
+				continue
+			}
+			if (len(changed) == 0 || !dirty[i]) && now.Sub(at) > refineAfter {
+				refine[i], stale = true, true
+				lossyAt[i] = time.Time{}
+			} else {
+				anyLossy = true
+			}
+		}
+		if stale {
+			sharpen = rectsOf(refine, w, h)
+		}
+		if len(changed) == 0 && len(sharpen) == 0 {
+			continue
 		}
 
 		seq++
 		img := &image.RGBA{Pix: cur.Pix, Stride: w * 4, Rect: image.Rect(0, 0, w, h)}
-		for i, r := range rects {
+		total := len(changed) + len(sharpen)
+		for i := 0; i < total; i++ {
+			r, f := image.Rectangle{}, uint8(fmtPNG)
+			if i < len(changed) {
+				r, f = changed[i], format
+			} else {
+				r = sharpen[i-len(changed)]
+			}
 			enc.Reset()
 			var err error
-			if format == fmtJPEG {
+			if f == fmtJPEG {
 				err = jpeg.Encode(&enc, img.SubImage(r), &jpeg.Options{Quality: jpegQuality})
 			} else {
 				err = pngEnc.Encode(&enc, img.SubImage(r))
@@ -332,7 +364,7 @@ func (v *view) pictures(c wincap.Capturer) {
 				logx.Debugf("remote windows: cannot encode a picture: %v", err)
 				return
 			}
-			hdr := rectHeader{seq: seq, x: r.Min.X, y: r.Min.Y, w: r.Dx(), h: r.Dy(), format: format, last: i == len(rects)-1}
+			hdr := rectHeader{seq: seq, x: r.Min.X, y: r.Min.Y, w: r.Dx(), h: r.Dy(), format: f, last: i == total-1}
 			v.sendMu.Lock()
 			buf, err = sendRect(v.conn, buf, hdr, enc.Bytes())
 			v.sendMu.Unlock()

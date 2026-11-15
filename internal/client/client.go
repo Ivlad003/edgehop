@@ -50,6 +50,11 @@ type Config struct {
 	// View, when set, lets the server show windows of this computer and
 	// control them (remote windows, experimental).
 	View *rview.Source
+
+	// Dragged, when set together with View, reports the window the user is
+	// moving with the mouse right now (id 0: none). It lets a window that is
+	// pushed against the edge towards the server open over there.
+	Dragged func() (id uint64, w, h int)
 }
 
 // Client is a connection to a server that reconnects forever.
@@ -214,6 +219,9 @@ func (c *Client) session(ctx context.Context) error {
 	}
 	if c.cfg.View != nil {
 		caps |= proto.CapView
+		if c.cfg.Dragged != nil {
+			caps |= proto.CapDrag
+		}
 	}
 	if err := ch.Send(proto.AppendHello(nil, c.cfg.Name, runtime.GOOS, w, h, caps)); err != nil {
 		return err
@@ -318,6 +326,14 @@ func (c *Client) session(ctx context.Context) error {
 			logx.Debugf("cursor left")
 			if link != nil {
 				go link.cursorLeft()
+			}
+		case proto.TDragQuery:
+			if c.cfg.View != nil && c.cfg.Dragged != nil {
+				id, ww, wh := c.cfg.Dragged()
+				out = proto.AppendDragReply(out[:0], m.Bundle, id, ww, wh)
+				if err := ch.Send(out); err != nil {
+					return err
+				}
 			}
 		case proto.TViewOpen:
 			if c.cfg.View != nil {

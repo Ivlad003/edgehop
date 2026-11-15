@@ -34,6 +34,8 @@ const (
 	TClipSend  = 15 // server -> client: send your clipboard as bundle N on the data connection
 	TViewOpen  = 16 // server -> client: open view connection N (remote windows, experimental)
 	TViewHello = 17 // client -> server, first frame of a view connection: session id, N
+	TDragQuery = 18 // server -> client: is a window being dragged with the mouse right now? (question N)
+	TDragReply = 19 // client -> server: answer N - the window's id and size, id 0 for "none"
 )
 
 // Capabilities, exchanged in Hello and Welcome. A side only uses a feature
@@ -42,6 +44,7 @@ const (
 	CapClipboard = 1 << 0 // shared clipboard over a separate data connection
 	CapDrop      = 1 << 1 // accepts files sent on purpose, over the data connection
 	CapView      = 1 << 2 // its windows can be shown and controlled from the server (experimental)
+	CapDrag      = 1 << 3 // can tell which of its windows is being dragged (TDragQuery)
 )
 
 // Msg is a decoded message. Only the fields of its Type are meaningful.
@@ -114,6 +117,16 @@ func AppendViewOpen(b []byte, id uint32) []byte {
 
 func AppendViewHello(b []byte, session, id uint32) []byte {
 	return be.AppendUint32(be.AppendUint32(append(b, TViewHello), session), id)
+}
+
+func AppendDragQuery(b []byte, id uint32) []byte {
+	return be.AppendUint32(append(b, TDragQuery), id)
+}
+
+func AppendDragReply(b []byte, id uint32, window uint64, w, h int) []byte {
+	b = be.AppendUint32(append(b, TDragReply), id)
+	b = be.AppendUint64(b, window)
+	return be.AppendUint32(be.AppendUint32(b, uint32(w)), uint32(h))
 }
 
 func AppendReject(b []byte, reason string) []byte {
@@ -249,8 +262,12 @@ func Decode(b []byte) (Msg, error) {
 		m.Session = r.u32()
 	case TClipState:
 		m.Changed = r.u8() != 0
-	case TClipSend, TViewOpen:
+	case TClipSend, TViewOpen, TDragQuery:
 		m.Bundle = r.u32()
+	case TDragReply:
+		m.Bundle = r.u32()
+		m.T = r.u64() // the window's id
+		m.W, m.H = r.u32(), r.u32()
 	case TViewHello:
 		m.Session = r.u32()
 		m.Bundle = r.u32()

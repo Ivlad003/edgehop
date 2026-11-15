@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,6 +113,14 @@ func (v *Viewer) URL() string {
 	return fmt.Sprintf("http://%s/?t=%s", v.ln.Addr(), v.token)
 }
 
+// WindowURL is a link that shows one window of a computer straight away:
+// it carries the access code and leads on to the page of that window. The
+// window is brought to the front over there, as it would be after a click.
+func (v *Viewer) WindowURL(peer string, window uint64) string {
+	page := "view.html?" + url.Values{"peer": {peer}, "win": {strconv.FormatUint(window, 10)}, "front": {"1"}}.Encode()
+	return fmt.Sprintf("http://%s/?%s", v.ln.Addr(), url.Values{"t": {v.token}, "go": {page}}.Encode())
+}
+
 // Serve answers requests until ctx ends.
 func (v *Viewer) Serve(ctx context.Context) {
 	srv := &http.Server{Handler: v.Handler(), ReadHeaderTimeout: 5 * time.Second}
@@ -183,7 +192,12 @@ func (v *Viewer) Handler() http.Handler {
 				return
 			}
 			http.SetCookie(w, &http.Cookie{Name: viewCookie, Value: v.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
-			http.Redirect(w, r, "/", http.StatusSeeOther)
+			next := "/"
+			// Only on to the page of a window, never to another site.
+			if page := r.URL.Query().Get("go"); strings.HasPrefix(page, "view.html?") {
+				next = "/" + page
+			}
+			http.Redirect(w, r, next, http.StatusSeeOther)
 			return
 		}
 		c, err := r.Cookie(viewCookie)
@@ -319,6 +333,9 @@ func (v *Viewer) handleStream(w http.ResponseWriter, r *http.Request) {
 	if err := st.send(be.AppendUint64([]byte{mStart}, win)); err != nil {
 		end(err.Error())
 		return
+	}
+	if r.URL.Query().Get("front") == "1" {
+		st.send([]byte{mFront})
 	}
 	for {
 		msg, err := conn.Recv()

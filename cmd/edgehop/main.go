@@ -433,6 +433,59 @@ func (s *sender) run(ctx context.Context, cmds <-chan childCommand, send func(to
 	}
 }
 
+// openDraggedWindow shows a window that was dragged over from another
+// computer: in a browser window of its own with its top edge under the
+// cursor, where a browser can do that, and as an ordinary page otherwise.
+func openDraggedWindow(viewer *rview.Viewer, capture input.Capture, d server.DraggedWindow) {
+	link := viewer.WindowURL(d.Peer, d.ID)
+	sw, sh := capture.Size()
+	cx, cy := layout.EntryPoint(sw, sh, d.Side, d.Frac, 0)
+	w, h := d.W, d.H+40 // room for the title bar
+	if w < 320 {
+		w = 320
+	}
+	if h < 240 {
+		h = 240
+	}
+	if w > sw {
+		w = sw
+	}
+	if h > sh {
+		h = sh
+	}
+	x, y := cx-w/2, cy-16
+	if x > sw-w {
+		x = sw - w
+	}
+	if x < 0 {
+		x = 0
+	}
+	if y > sh-h {
+		y = sh - h
+	}
+	if y < 0 {
+		y = 0
+	}
+	// The browser counts from the main display, the capture from the
+	// top-left corner of the whole desktop.
+	ox, oy := 0, 0
+	for i, m := range input.Monitors() {
+		if i == 0 || m.X < ox {
+			ox = m.X
+		}
+		if i == 0 || m.Y < oy {
+			oy = m.Y
+		}
+	}
+	err := rview.OpenAppWindow(link, ox+x, oy+y, w, h)
+	if err != nil {
+		err = ui.OpenBrowser(link)
+	}
+	if err != nil {
+		logx.Warnf("remote windows: cannot open the window dragged over from %s: %v", d.Peer, err)
+	}
+}
+
 // screenOrder lists the layout's screens: the row first, then the rest.
 func screenOrder(cfg *config.Config, lay *layout.Layout) []string {
 	seen := map[string]bool{}
@@ -473,17 +526,23 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	defer capture.Close()
 
 	cb, clipDir := openClipboard(cfg, noInput)
+	var viewer *rview.Viewer // remote windows; set below when they are on
 	srv := server.New(server.Config{
 		Name: cfg.Name, Listen: cfg.Listen, Key: cfg.Key,
 		Layout: lay, Screens: screens, Hotkey: hotkey, AutoScale: true,
 		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
 		DropDir: cfg.DownloadDir(), ShowsWindows: cfg.RemoteWindows,
+		OnWindowDrag: func(d server.DraggedWindow) {
+			if viewer != nil {
+				openDraggedWindow(viewer, capture, d)
+			}
+		},
 	}, capture)
 	files := &sender{downloads: cfg.DownloadDir()}
 	go files.run(ctx, cmds, srv.SendFiles)
 	var view *viewStatus
 	if cfg.RemoteWindows {
-		viewer := &rview.Viewer{
+		v := &rview.Viewer{
 			Peers: func() []rview.Peer {
 				var out []rview.Peer
 				for _, p := range srv.ViewPeers() {
@@ -500,9 +559,10 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 			},
 			Remap: srv.ViewRemap,
 		}
-		if err := viewer.Listen(); err != nil {
+		if err := v.Listen(); err != nil {
 			logx.Warnf("remote windows are not available: %v", err)
 		} else {
+			viewer = v // before the server starts serving: the drag hook reads it
 			go viewer.Serve(ctx)
 			view = &viewStatus{URL: viewer.URL()}
 			logx.Infof("remote windows (experimental) are on: the settings page opens the windows of the other computers")
@@ -592,6 +652,12 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 		Name: cfg.Name, Server: cfg.Server, Key: cfg.Key,
 		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
 		DropDir: cfg.DownloadDir(), View: view,
+		Dragged: func() (uint64, int, int) {
+			if w, ok := (wincap.System{}).Dragged(); ok {
+				return w.ID, w.W, w.H
+			}
+			return 0, 0, 0
+		},
 	}, inj)
 	files := &sender{downloads: cfg.DownloadDir()}
 	go files.run(ctx, cmds, func(_ string, paths []string) error { return c.SendFiles(paths) })

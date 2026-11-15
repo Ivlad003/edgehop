@@ -185,6 +185,18 @@ function fitWindow(w, h) {
   } catch (e) { /* ignore */ }
 }
 
+// The picture is shown as large as the window allows, never larger than it
+// is, and always in its own proportions. The size is set here rather than
+// left to the style sheet, because browsers disagree about scaling a canvas.
+function layout() {
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w < 2 || h < 2) return;
+  const scale = Math.min(1, window.innerWidth / w, window.innerHeight / h);
+  canvas.style.width = Math.max(1, Math.round(w * scale)) + 'px';
+  canvas.style.height = Math.max(1, Math.round(h * scale)) + 'px';
+}
+
 let lastTitle = '';
 
 function onMeta(meta) {
@@ -196,6 +208,7 @@ function onMeta(meta) {
       canvas.height = meta.h;
     }
     fitWindow(meta.w, meta.h);
+    layout();
   });
 }
 
@@ -232,7 +245,8 @@ async function run() {
   setStatus(t('connecting'));
   let reason = '';
   try {
-    const resp = await fetch('/api/stream?peer=' + encodeURIComponent(peer) + '&win=' + encodeURIComponent(win),
+    const front = params.get('front') === '1' ? '&front=1' : '';
+    const resp = await fetch('/api/stream?peer=' + encodeURIComponent(peer) + '&win=' + encodeURIComponent(win) + front,
       { cache: 'no-store', credentials: 'same-origin' });
     if (!resp.ok) throw new Error((await resp.text()) || ('HTTP ' + resp.status));
     const reader = resp.body.getReader();
@@ -266,5 +280,6 @@ document.documentElement.lang = lang;
 document.title = 'edgehop — ' + peer;
 document.getElementById('retry').textContent = t('retry');
 document.getElementById('retry').addEventListener('click', () => location.reload());
+window.addEventListener('resize', layout);
 wireInput();
 run();

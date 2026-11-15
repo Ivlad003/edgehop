@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -285,5 +286,53 @@ func TestViewerReportsWhyAViewEnded(t *testing.T) {
 	}
 	if code, _ := r.get("/api/stream?peer=win&win=abc"); code != http.StatusBadRequest {
 		t.Errorf("a window id that is not a number: status %d", code)
+	}
+}
+
+// The link for a window that was dragged over: one address that lets the
+// browser in and leads straight to that window - and nowhere else.
+func TestWindowLinkOpensThatWindow(t *testing.T) {
+	r := newViewRig(t)
+	plain := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	location := func(link string) (int, string, bool) {
+		resp, err := plain.Get(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode, resp.Header.Get("Location"), len(resp.Cookies()) > 0
+	}
+	code, to, cookie := location(r.v.WindowURL("win", 7))
+	if code != http.StatusSeeOther || to != "/view.html?front=1&peer=win&win=7" || !cookie {
+		t.Errorf("the window link: %d to %q, cookie %v", code, to, cookie)
+	}
+	for _, bad := range []string{"//evil.example/view.html?x", "https://evil.example/", "/api/peers", "index.html"} {
+		link := r.base + "/?" + url.Values{"t": {r.v.token}, "go": {bad}}.Encode()
+		if code, to, _ := location(link); code != http.StatusSeeOther || to != "/" {
+			t.Errorf("go=%q leads to %q (%d), want the start page", bad, to, code)
+		}
+	}
+
+	// Opened that way, the window is brought to the front on its computer.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", r.base+"/api/stream?peer=win&win=7&front=1", nil)
+	resp, err := (&http.Client{Jar: r.client.Jar}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	eventually(t, "the window to be raised", func() bool {
+		r.desk.mu.Lock()
+		defer r.desk.mu.Unlock()
+		return r.desk.raises == 1
+	})
+}
+
+func TestAppWindowArguments(t *testing.T) {
+	got := fmt.Sprint(appWindowArgs("http://127.0.0.1:5/?t=x&go=view.html", -1200, 40, 800, 600))
+	want := "[--app=http://127.0.0.1:5/?t=x&go=view.html --window-size=800,600 --window-position=-1200,40]"
+	if got != want {
+		t.Errorf("arguments = %s\nwant        %s", got, want)
 	}
 }

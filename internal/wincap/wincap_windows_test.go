@@ -332,3 +332,85 @@ func TestLiveClickReachesTheWindow(t *testing.T) {
 		t.Error("the key press did not reach the window")
 	}
 }
+
+// Asking for the dragged window is harmless when nothing is being dragged.
+func TestDraggedWithoutADrag(t *testing.T) {
+	var sys System
+	if w, ok := sys.Dragged(); ok && live() {
+		t.Errorf("a dragged window was reported although nothing is dragged: %+v", w)
+	}
+}
+
+// While the user drags a window by its title bar, Dragged names it; and a
+// window that hangs over the edge of the screen is put back when raised.
+// Moves the real cursor: live runs only.
+func TestLiveDraggedWindowIsRecognised(t *testing.T) {
+	if !live() {
+		t.Skip("set EDGEHOP_LIVE=1 to run (moves the cursor and drags a window)")
+	}
+	showOwn = true
+	defer func() { showOwn = false }()
+	hwnd := openTestWindow(t, 200, 180, 420, 320)
+	var sys System
+	c, err := sys.Open(uint64(hwnd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var f Frame
+	if err := c.Capture(&f); err != nil {
+		t.Fatal(err)
+	}
+	inj, err := input.NewInjector(input.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inj.Close()
+	c.Raise()
+	time.Sleep(300 * time.Millisecond)
+
+	// Press on the title bar and move: Windows starts moving the window.
+	x, y := f.X+f.W/2, f.Y+12
+	inj.MoveAbs(x, y)
+	time.Sleep(100 * time.Millisecond)
+	inj.Button(keys.ButtonLeft, true)
+	found := false
+	for i := 1; i <= 60 && !found; i++ {
+		inj.MoveAbs(x+i*4, y+i*2)
+		time.Sleep(30 * time.Millisecond)
+		if w, ok := sys.Dragged(); ok {
+			found = true
+			if w.ID != uint64(hwnd) || w.Title != testWindowTitle || w.W != f.W || w.H != f.H {
+				t.Errorf("dragged window reported as %+v, want the test window %dx%d", w, f.W, f.H)
+			}
+		}
+	}
+	inj.Button(keys.ButtonLeft, false)
+	if !found {
+		t.Fatal("the window being dragged was not recognised")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if w, ok := sys.Dragged(); ok {
+		t.Errorf("still reported as dragged after the button was released: %+v", w)
+	}
+	var moved Frame
+	if err := c.Capture(&moved); err != nil {
+		t.Fatal(err)
+	}
+	if moved.X == f.X && moved.Y == f.Y {
+		t.Error("the drag did not move the window")
+	}
+
+	// Push it half off the right edge, then raise it: it comes back whole.
+	vx, _, _ := pGetSystemMetrics.Call(76)
+	vw, _, _ := pGetSystemMetrics.Call(78)
+	right := int(int32(vx)) + int(int32(vw))
+	pSetWindowPos.Call(hwnd, 0, uintptr(right-150), 200, 0, 0, swpNoSize|swpNoZOrder|swpNoActivate)
+	time.Sleep(100 * time.Millisecond)
+	c.Raise()
+	time.Sleep(200 * time.Millisecond)
+	whole, _ := windowRect(hwnd)
+	if vis := visibleRect(hwnd, whole); int(vis.right) > right {
+		t.Errorf("after raising, the window still ends at x=%d, beyond the screen edge %d", vis.right, right)
+	}
+}

@@ -41,6 +41,10 @@ var (
 	pReleaseDC                = user32.NewProc("ReleaseDC")
 	pPrintWindow              = user32.NewProc("PrintWindow")
 	pGetSystemMetrics         = user32.NewProc("GetSystemMetrics")
+	pGetGUIThreadInfo         = user32.NewProc("GetGUIThreadInfo")
+	pIsZoomed                 = user32.NewProc("IsZoomed")
+	pMonitorFromWindow        = user32.NewProc("MonitorFromWindow")
+	pGetMonitorInfoW          = user32.NewProc("GetMonitorInfoW")
 
 	pCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
 	pCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
@@ -74,6 +78,8 @@ const (
 	swpNoSize       = 0x0001
 	swpNoMove       = 0x0002
 	swpNoActivate   = 0x0010
+	swpNoZOrder     = 0x0004
+	guiInMoveSize   = 0x0002 // GUITHREADINFO: the thread is moving or sizing a window
 	procQueryLtd    = 0x1000
 	maxTitle        = 200
 	minListedSize   = 40
@@ -249,6 +255,86 @@ func (System) List() ([]Window, error) {
 	return out, nil
 }
 
+// guiThreadInfo is GUITHREADINFO.
+type guiThreadInfo struct {
+	size      uint32
+	flags     uint32
+	active    uintptr
+	focus     uintptr
+	capture   uintptr
+	menuOwner uintptr
+	moveSize  uintptr
+	caret     uintptr
+	caretRect rect
+}
+
+// Dragged returns the window the user is moving with the mouse right now,
+// if any: Windows knows which window is in its "move" mode.
+func (System) Dragged() (Window, bool) {
+	var gi guiThreadInfo
+	gi.size = uint32(unsafe.Sizeof(gi))
+	if call(pGetGUIThreadInfo, 0, uintptr(unsafe.Pointer(&gi))) == 0 { // 0: the thread the user works in
+		return Window{}, false
+	}
+	hwnd := gi.moveSize
+	if gi.flags&guiInMoveSize == 0 || hwnd == 0 || call(pIsWindowVisible, hwnd) == 0 {
+		return Window{}, false
+	}
+	pid := processID(hwnd)
+	if pid == uint32(call(pGetCurrentProcessId)) && !showOwn {
+		return Window{}, false
+	}
+	whole, ok := windowRect(hwnd)
+	if !ok {
+		return Window{}, false
+	}
+	r := visibleRect(hwnd, whole)
+	return Window{ID: uint64(hwnd), Title: title(hwnd), App: appName(pid), W: int(r.right - r.left), H: int(r.bottom - r.top)}, true
+}
+
+// monitorInfo is MONITORINFO.
+type monitorInfo struct {
+	size    uint32
+	monitor rect
+	work    rect
+	flags   uint32
+}
+
+// fit moves a window that hangs over the edge of its monitor back onto it:
+// only what is on the screen can be clicked.
+func fit(hwnd uintptr) {
+	if call(pIsZoomed, hwnd) != 0 || call(pIsIconic, hwnd) != 0 {
+		return
+	}
+	whole, ok := windowRect(hwnd)
+	if !ok {
+		return
+	}
+	vis := visibleRect(hwnd, whole)
+	mi := monitorInfo{size: uint32(unsafe.Sizeof(monitorInfo{}))}
+	mon := call(pMonitorFromWindow, hwnd, 2) // MONITOR_DEFAULTTONEAREST
+	if mon == 0 || call(pGetMonitorInfoW, mon, uintptr(unsafe.Pointer(&mi))) == 0 {
+		return
+	}
+	var dx, dy int32
+	if vis.right > mi.work.right {
+		dx = mi.work.right - vis.right
+	}
+	if vis.left+dx < mi.work.left {
+		dx = mi.work.left - vis.left
+	}
+	if vis.bottom > mi.work.bottom {
+		dy = mi.work.bottom - vis.bottom
+	}
+	if vis.top+dy < mi.work.top {
+		dy = mi.work.top - vis.top
+	}
+	if dx == 0 && dy == 0 {
+		return
+	}
+	pSetWindowPos.Call(hwnd, 0, uintptr(whole.left+dx), uintptr(whole.top+dy), 0, 0, swpNoSize|swpNoZOrder|swpNoActivate)
+}
+
 type winCapturer struct {
 	hwnd   uintptr
 	dc     uintptr // memory device context the window is printed into
@@ -402,6 +488,7 @@ func (c *winCapturer) Raise() {
 	if call(pIsIconic, c.hwnd) != 0 {
 		pShowWindow.Call(c.hwnd, swRestore)
 	}
+	fit(c.hwnd)
 	// Windows rarely lets a background program take the keyboard focus, but
 	// it does let it reorder windows: lift this one above the others, and
 	// the click that follows activates it like any click would.

@@ -405,3 +405,8 @@ func (c *macCapturer) Raise() {
 		app.Send(selActivate, activateIgnoring)
 	}
 }
+
+// Dragged returns the window the user is moving with the mouse right now.
+// This system offers no way to tell, so dragging a window to another
+// computer starts only on Windows.
+func (System) Dragged() (Window, bool) { return Window{}, false }

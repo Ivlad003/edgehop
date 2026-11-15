@@ -277,8 +277,8 @@ func (v *testViewer) next(wait time.Duration) *update {
 			if up == nil {
 				up = &update{seq: h.seq, format: h.format}
 			}
-			if up.seq != h.seq || up.format != h.format {
-				v.t.Fatalf("mixed update: %+v then %+v", *up, h)
+			if up.seq != h.seq {
+				v.t.Fatalf("two updates mixed: %+v then %+v", *up, h)
 			}
 			r := image.Rect(h.x, h.y, h.x+h.w, h.y+h.h)
 			up.rects = append(up.rects, r)
@@ -319,6 +319,27 @@ func (v *testViewer) sharp(desk *fakeDesk) {
 		}
 	}
 	v.t.Fatal("the viewer never got the exact picture")
+}
+
+// sameOutside is same, ignoring the pixels inside skip.
+func (v *testViewer) sameOutside(desk *fakeDesk, skip image.Rectangle) bool {
+	desk.mu.Lock()
+	defer desk.mu.Unlock()
+	if v.pic == nil || len(v.pic.Pix) != len(desk.pix) {
+		return false
+	}
+	for y := 0; y < desk.h; y++ {
+		for x := 0; x < desk.w; x++ {
+			if image.Pt(x, y).In(skip) {
+				continue
+			}
+			i := (y*desk.w + x) * 4
+			if !bytes.Equal(v.pic.Pix[i:i+4], desk.pix[i:i+4]) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (v *testViewer) same(desk *fakeDesk) bool {
@@ -604,4 +625,32 @@ func TestKeysAreDroppedWhenTheWindowCannotComeToFront(t *testing.T) {
 	// A click is still passed on: it is what brings a window to the front.
 	v.conn.Send(append(appendPos(nil, mButton, 0, 0), keys.ButtonLeft, 1))
 	eventually(t, "the click", func() bool { return inj.count() >= 2 })
+}
+
+// A part of the window that keeps changing must not keep the rest blurry:
+// what stands still is sharpened on its own.
+func TestStillPartsAreSharpenedWhileOthersKeepChanging(t *testing.T) {
+	desk := newDesk(300, 200)
+	v := startSource(t, desk, &fakeInjector{})
+	v.start()
+	up := v.next(3 * time.Second) // the whole picture, blurry
+	if up == nil || up.format != fmtJPEG {
+		t.Fatalf("first update: %+v", up)
+	}
+	v.ack(up.seq)
+	corner := image.Rect(0, 0, 32, 32) // one tile
+	if v.sameOutside(desk, corner) {
+		t.Fatal("the first picture is already exact; this test needs it blurry")
+	}
+	// From now on that corner never stops changing.
+	deadline := time.Now().Add(5 * time.Second)
+	for i := 0; !v.sameOutside(desk, corner); i++ {
+		if time.Now().After(deadline) {
+			t.Fatal("the still part of the window stayed blurry while a corner kept changing")
+		}
+		desk.paint(image.Rect(4, 4, 20, 20), [3]byte{byte(i * 37), byte(i * 11), 90})
+		if up := v.next(100 * time.Millisecond); up != nil {
+			v.ack(up.seq)
+		}
+	}
 }
