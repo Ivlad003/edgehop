@@ -30,9 +30,11 @@ import (
 	"github.com/Ivlad003/edgehop/internal/keys"
 	"github.com/Ivlad003/edgehop/internal/layout"
 	"github.com/Ivlad003/edgehop/internal/logx"
+	"github.com/Ivlad003/edgehop/internal/rview"
 	"github.com/Ivlad003/edgehop/internal/secure"
 	"github.com/Ivlad003/edgehop/internal/server"
 	"github.com/Ivlad003/edgehop/internal/ui"
+	"github.com/Ivlad003/edgehop/internal/wincap"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.repoURL=...".
@@ -320,6 +322,7 @@ type screenStatus struct {
 	H         int     `json:"h,omitempty"`
 	UDP       bool    `json:"udp,omitempty"`
 	Files     bool    `json:"files,omitempty"` // files can be sent to it
+	View      bool    `json:"view,omitempty"`  // its windows can be shown here
 	RTTMs     float64 `json:"rttMs,omitempty"`
 }
 
@@ -334,7 +337,15 @@ type serverStatus struct {
 	Pending []server.UnknownClient `json:"pending"`
 	// Clipboard describes the last transfer (clipboard or files), if any.
 	Clipboard string `json:"clipboard,omitempty"`
+	// View is set while remote windows (experimental) are on.
+	View *viewStatus `json:"view,omitempty"`
 	sendStatus
+}
+
+// viewStatus tells the settings page where the windows of the other
+// computers can be opened.
+type viewStatus struct {
+	URL string `json:"url"`
 }
 
 type clientStatus struct {
@@ -349,6 +360,8 @@ type clientStatus struct {
 	// be sent to it.
 	ServerName string `json:"serverName,omitempty"`
 	Files      bool   `json:"files,omitempty"`
+	// View: the server may show and control this computer's windows.
+	View bool `json:"view,omitempty"`
 	sendStatus
 }
 
@@ -466,6 +479,36 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	}, capture)
 	files := &sender{downloads: cfg.DownloadDir()}
 	go files.run(ctx, cmds, srv.SendFiles)
+	var view *viewStatus
+	if cfg.RemoteWindows {
+		viewer := &rview.Viewer{
+			Peers: func() []rview.Peer {
+				var out []rview.Peer
+				for _, p := range srv.ViewPeers() {
+					out = append(out, rview.Peer{Name: p.Name, OS: p.OS})
+				}
+				return out
+			},
+			Open: func(peer string) (rview.Conn, error) {
+				ch, err := srv.OpenView(peer)
+				if err != nil {
+					return nil, err
+				}
+				return ch, nil
+			},
+			Remap: srv.ViewRemap,
+		}
+		if err := viewer.Listen(); err != nil {
+			logx.Warnf("remote windows are not available: %v", err)
+		} else {
+			go viewer.Serve(ctx)
+			view = &viewStatus{URL: viewer.URL()}
+			logx.Infof("remote windows (experimental) are on: the settings page opens the windows of the other computers")
+			if !child {
+				logx.Infof("remote windows: %s", viewer.URL())
+			}
+		}
+	}
 	logx.Infof("files sent to this computer are saved in %s", cfg.DownloadDir())
 	if err := srv.Listen(); err != nil {
 		return err
@@ -485,7 +528,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	}
 	if child {
 		go reportStatus(ctx, func() any {
-			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus(), Pending: srv.Unknown(), Clipboard: srv.ClipboardStatus(), sendStatus: files.status()}
+			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus(), Pending: srv.Unknown(), Clipboard: srv.ClipboardStatus(), View: view, sendStatus: files.status()}
 			if hotkey.Key != 0 {
 				st.Hotkey = hotkeyText(cfg)
 			}
@@ -497,7 +540,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 				s := screenStatus{Name: n, Self: n == cfg.Name}
 				if c, ok := clients[n]; ok {
 					s.Connected, s.OS, s.W, s.H, s.UDP, s.RTTMs = true, c.OS, c.W, c.H, c.UDP, c.RTTMs
-					s.Files = c.Files
+					s.Files, s.View = c.Files, c.View
 				}
 				st.Screens = append(st.Screens, s)
 			}
@@ -534,10 +577,19 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	logx.Infof("client %q, desktop %dx%d, server %s", cfg.Name, w, h, cfg.Server)
 	logx.Infof("input: %s", inj.Describe())
 	cb, clipDir := openClipboard(cfg, noInput)
+	var view *rview.Source
+	if cfg.RemoteWindows {
+		if err := wincap.Supported(); err != nil {
+			logx.Warnf("remote windows: %v", err)
+		} else {
+			view = &rview.Source{Windows: wincap.System{}, Injector: inj, Name: cfg.Name, OS: runtime.GOOS}
+			logx.Infof("remote windows (experimental) are on: the server may show and control this computer's windows")
+		}
+	}
 	c := client.New(client.Config{
 		Name: cfg.Name, Server: cfg.Server, Key: cfg.Key,
 		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
-		DropDir: cfg.DownloadDir(),
+		DropDir: cfg.DownloadDir(), View: view,
 	}, inj)
 	files := &sender{downloads: cfg.DownloadDir()}
 	go files.run(ctx, cmds, func(_ string, paths []string) error { return c.SendFiles(paths) })
@@ -546,7 +598,7 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 		go reportStatus(ctx, func() any {
 			return clientStatus{Role: "client", Name: cfg.Name, Server: cfg.Server,
 				Connected: c.Connected(), Active: c.Active(), Error: c.LastError(), Clipboard: c.ClipboardStatus(),
-				ServerName: c.ServerName(), Files: c.CanSendFiles(), sendStatus: files.status()}
+				ServerName: c.ServerName(), Files: c.CanSendFiles(), View: view != nil, sendStatus: files.status()}
 		})
 	}
 	return c.Run(ctx)

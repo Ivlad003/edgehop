@@ -16,6 +16,7 @@ import (
 	"github.com/Ivlad003/edgehop/internal/input"
 	"github.com/Ivlad003/edgehop/internal/logx"
 	"github.com/Ivlad003/edgehop/internal/proto"
+	"github.com/Ivlad003/edgehop/internal/rview"
 	"github.com/Ivlad003/edgehop/internal/secure"
 )
 
@@ -45,6 +46,10 @@ type Config struct {
 	// DropDir is where files that another computer sends to this one are
 	// saved. Empty means this computer does not accept sent files.
 	DropDir string
+
+	// View, when set, lets the server show windows of this computer and
+	// control them (remote windows, experimental).
+	View *rview.Source
 }
 
 // Client is a connection to a server that reconnects forever.
@@ -58,6 +63,7 @@ type Client struct {
 	clipNote  atomic.Value             // string: the last clipboard transfer
 	clipCount atomic.Int64             // completed clipboard transfers
 	link      atomic.Pointer[dataLink] // the data connection of the current session
+	views     atomic.Int32             // windows of this computer being shown right now
 }
 
 // New creates a client.
@@ -202,6 +208,9 @@ func (c *Client) session(ctx context.Context) error {
 	if c.cfg.DropDir != "" {
 		caps |= proto.CapDrop
 	}
+	if c.cfg.View != nil {
+		caps |= proto.CapView
+	}
 	if err := ch.Send(proto.AppendHello(nil, c.cfg.Name, runtime.GOOS, w, h, caps)); err != nil {
 		return err
 	}
@@ -301,6 +310,10 @@ func (c *Client) session(ctx context.Context) error {
 			logx.Debugf("cursor left")
 			if link != nil {
 				go link.cursorLeft()
+			}
+		case proto.TViewOpen:
+			if c.cfg.View != nil {
+				go c.openView(welcome.Session, m.Bundle, stop)
 			}
 		case proto.TClipSend:
 			if link != nil {

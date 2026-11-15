@@ -73,6 +73,14 @@ const TEXT = {
     sendReadError: "файл не вдалося прочитати",
     sendStopped: "edgehop зупинено",
     savedIn: "Файли, надіслані на цей комп'ютер, зберігаються в {0}",
+    rwinServer: "Віддалені вікна (експериментально): показувати тут, в окремих вікнах, вікна інших комп'ютерів",
+    rwinClient: "Віддалені вікна (експериментально): дозволити комп'ютеру з мишею показувати вікна цього комп'ютера й керувати ними",
+    rwinHint: "Вмикається на обох комп'ютерах. Показувати можна вікна комп'ютерів з Windows і macOS.",
+    rwinTitle: "Віддалені вікна (експериментально)",
+    rwinOpen: "Обрати вікно",
+    rwinText: "Вікно іншого комп'ютера відкривається тут окремим вікном; миша й клавіатура в ньому працюють на тому комп'ютері. Дозволили показ: {0}.",
+    rwinNone: "Жоден підключений комп'ютер ще не дозволив показувати свої вікна: увімкніть там «Віддалені вікна» в налаштуваннях edgehop і збережіть.",
+    rwinAllowed: "Комп'ютер з мишею може показувати вікна цього комп'ютера й керувати ними.",
     speedHint: "Швидкість курсора підбирається автоматично під розмір кожного екрана. Число нижче множить її: 1 — як є, 1.5 — у півтора раза швидше.",
     speed: 'Швидкість курсора',
     swap: 'Поміняти Alt і Win/Cmd (PC-клавіатура ↔ Mac)',
@@ -175,6 +183,14 @@ const TEXT = {
     sendReadError: "the file could not be read",
     sendStopped: "edgehop was stopped",
     savedIn: "Files sent to this computer are saved in {0}",
+    rwinServer: "Remote windows (experimental): show windows of the other computers here, in windows of their own",
+    rwinClient: "Remote windows (experimental): let the computer with the mouse show this computer's windows and control them",
+    rwinHint: "Turn it on on both computers. Windows of Windows and macOS computers can be shown.",
+    rwinTitle: "Remote windows (experimental)",
+    rwinOpen: "Choose a window",
+    rwinText: "A window of another computer opens here in a window of its own; the mouse and keyboard in it work on that computer. Allowed by: {0}.",
+    rwinNone: "No connected computer has allowed showing its windows yet: turn on “Remote windows” in the edgehop settings there and save.",
+    rwinAllowed: "The computer with the mouse may show this computer's windows and control them.",
     speedHint: "The cursor speed is matched to the size of each screen automatically. The number below multiplies it: 1 keeps it, 1.5 makes it one and a half times faster.",
     speed: 'Cursor speed',
     swap: 'Swap Alt and Win/Cmd (PC keyboard ↔ Mac)',
@@ -332,6 +348,8 @@ function renderForm() {
   $('row-add').placeholder = t('addPlaceholder');
   $('f-clip').checked = !!form.clipboard;
   $('f-clipmax').value = form.clipboardMaxMB || 200;
+  $('f-rwin').checked = !!form.remoteWindows;
+  $('rwin-label').textContent = t(role === 'server' ? 'rwinServer' : 'rwinClient');
   $('f-above').value = form.above || '';
   $('f-below').value = form.below || '';
   $('client-note').textContent = role === 'client' && selfName() ? t('clientNote', selfName()) : '';
@@ -589,10 +607,12 @@ function renderLive(force) {
     line.textContent = !st.connected ? clientProblem(st)
       : st.active ? t('clientActive', st.server) : t('clientConnected', st.server);
     if (st.clipboard) hint.textContent = t('clipLast', st.clipboard);
+    if (st.view) hint.textContent += (hint.textContent ? ' ' : '') + t('rwinAllowed');
   }
 
   checkSend();
   renderSend();
+  renderRemoteWindows();
   renderOthers();
   renderThis();
   renderLog();
@@ -649,6 +669,20 @@ function renderLog() {
   const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
   log.textContent = text;
   if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Remote windows (experimental): on the server, a card that opens the list
+// of windows of the other computers.
+
+function renderRemoteWindows() {
+  const st = S && S.engine.running ? (S.engine.status || null) : null;
+  const on = !!(st && st.role === 'server' && st.view && st.view.url);
+  show('rwin-card', on);
+  if (!on) return;
+  const names = (st.screens || []).filter((s) => !s.self && s.connected && s.view).map((s) => s.name);
+  $('rwin-open').disabled = names.length === 0;
+  $('rwin-text').textContent = names.length === 0 ? t('rwinNone') : t('rwinText', names.join(', '));
 }
 
 // ---------------------------------------------------------------------------
@@ -984,6 +1018,11 @@ function init() {
   $('f-hide').addEventListener('change', () => { form.hideCursor = $('f-hide').checked; });
   $('f-size').addEventListener('input', () => { form.screenSize = $('f-size').value; });
   $('f-clip').addEventListener('change', () => { form.clipboard = $('f-clip').checked; });
+  $('f-rwin').addEventListener('change', () => { form.remoteWindows = $('f-rwin').checked; });
+  $('rwin-open').addEventListener('click', () => {
+    const view = S && S.engine.running && S.engine.status ? S.engine.status.view : null;
+    if (view && view.url) window.open(view.url, 'edgehop-windows', 'popup=yes,width=560,height=640');
+  });
   $('f-clipmax').addEventListener('input', () => { form.clipboardMaxMB = parseInt($('f-clipmax').value, 10) || 0; });
 
   $('key-show').addEventListener('click', () => {

@@ -55,6 +55,11 @@ type Config struct {
 	// Default: "edgehop" inside the Downloads folder.
 	Downloads string `toml:"downloads,omitempty"`
 
+	// Both, experimental: remote windows. On a client: the server may show
+	// this computer's windows and control them. On the server: offer the
+	// windows of the clients that allow it. Off unless set.
+	RemoteWindows bool `toml:"remote_windows,omitempty"`
+
 	// Both: override the detected desktop size, "1920x1080".
 	ScreenSize string `toml:"screen_size,omitempty"`
 
@@ -408,6 +413,7 @@ type Form struct {
 	ScreenSize     string                `json:"screenSize"`
 	Clipboard      bool                  `json:"clipboard"`
 	ClipboardMaxMB int                   `json:"clipboardMaxMB"`
+	RemoteWindows  bool                  `json:"remoteWindows"`
 	Screens        map[string]FormScreen `json:"screens"`
 }
 
@@ -443,6 +449,7 @@ func (c *Config) Form() Form {
 		ScreenSize:     c.ScreenSize,
 		Clipboard:      c.ClipboardEnabled(),
 		ClipboardMaxMB: int(c.ClipboardLimit() >> 20),
+		RemoteWindows:  c.RemoteWindows,
 		Screens:        map[string]FormScreen{},
 	}
 	if c.ReleaseHotkey != nil {
@@ -472,6 +479,7 @@ func (c *Config) Apply(f Form) {
 	share := f.Clipboard
 	c.Clipboard = &share
 	c.ClipboardMaxMB = f.ClipboardMaxMB
+	c.RemoteWindows = f.RemoteWindows
 	if c.ClipboardMaxMB == DefaultClipboardMaxMB || c.ClipboardMaxMB < 0 {
 		c.ClipboardMaxMB = 0 // the default; leave it out of the file
 	}

@@ -32,6 +32,8 @@ const (
 	TDataHello = 13 // client -> server, first frame of a data connection: session id
 	TClipState = 14 // client -> server, after the cursor left: did its clipboard change?
 	TClipSend  = 15 // server -> client: send your clipboard as bundle N on the data connection
+	TViewOpen  = 16 // server -> client: open view connection N (remote windows, experimental)
+	TViewHello = 17 // client -> server, first frame of a view connection: session id, N
 )
 
 // Capabilities, exchanged in Hello and Welcome. A side only uses a feature
@@ -39,6 +41,7 @@ const (
 const (
 	CapClipboard = 1 << 0 // shared clipboard over a separate data connection
 	CapDrop      = 1 << 1 // accepts files sent on purpose, over the data connection
+	CapView      = 1 << 2 // its windows can be shown and controlled from the server (experimental)
 )
 
 // Msg is a decoded message. Only the fields of its Type are meaningful.
@@ -103,6 +106,14 @@ func AppendClipState(b []byte, changed bool) []byte {
 
 func AppendClipSend(b []byte, bundle uint32) []byte {
 	return be.AppendUint32(append(b, TClipSend), bundle)
+}
+
+func AppendViewOpen(b []byte, id uint32) []byte {
+	return be.AppendUint32(append(b, TViewOpen), id)
+}
+
+func AppendViewHello(b []byte, session, id uint32) []byte {
+	return be.AppendUint32(be.AppendUint32(append(b, TViewHello), session), id)
 }
 
 func AppendReject(b []byte, reason string) []byte {
@@ -238,7 +249,10 @@ func Decode(b []byte) (Msg, error) {
 		m.Session = r.u32()
 	case TClipState:
 		m.Changed = r.u8() != 0
-	case TClipSend:
+	case TClipSend, TViewOpen:
+		m.Bundle = r.u32()
+	case TViewHello:
+		m.Session = r.u32()
 		m.Bundle = r.u32()
 	case TReject:
 		m.Reason = r.str()

@@ -147,6 +147,8 @@ type Server struct {
 	idMu sync.RWMutex
 	byID map[uint32]*session
 
+	views viewHub // remote windows (experimental)
+
 	warnMu sync.Mutex
 	warned map[string]time.Time
 
@@ -233,6 +235,7 @@ type ClientInfo struct {
 	Addr  string  `json:"addr"`
 	UDP   bool    `json:"udp"`   // cursor motion travels over UDP
 	Files bool    `json:"files"` // files can be sent to it
+	View  bool    `json:"view"`  // its windows can be shown here
 	RTTMs float64 `json:"rttMs"` // last measured round trip, milliseconds
 }
 
@@ -279,6 +282,7 @@ func (s *Server) Clients() []ClientInfo {
 			Name: sess.name, OS: sess.os, W: sess.w, H: sess.h, Addr: host,
 			UDP:   sess.udp.Load() != nil,
 			Files: sess.caps&proto.CapDrop != 0 && sess.data.Load() != nil,
+			View:  sess.caps&proto.CapView != 0,
 			RTTMs: math.Round(float64(sess.rtt.Load())/1e4) / 100,
 		})
 	}
@@ -426,6 +430,11 @@ func (s *Server) handleConn(conn net.Conn) {
 	if err == nil && hello.Type == proto.TDataHello {
 		conn.SetReadDeadline(time.Time{})
 		s.handleData(ch, hello.Session)
+		return
+	}
+	if err == nil && hello.Type == proto.TViewHello {
+		conn.SetReadDeadline(time.Time{})
+		s.handleView(ch, hello.Session, hello.Bundle)
 		return
 	}
 	if err != nil || hello.Type != proto.THello {
