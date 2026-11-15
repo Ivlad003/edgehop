@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -196,12 +197,36 @@ func (s *Server) Listen() error {
 	}
 	tcpAddr := ln.Addr().(*net.TCPAddr)
 	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: tcpAddr.IP, Port: tcpAddr.Port, Zone: tcpAddr.Zone})
-	if err != nil {
-		ln.Close()
-		return fmt.Errorf("cannot open UDP port %d: %w", tcpAddr.Port, err)
+	if err == nil {
+		s.ln, s.udp = ln, udp
+		return nil
 	}
-	s.ln, s.udp = ln, udp
-	return nil
+	ln.Close()
+	failed := fmt.Errorf("cannot open UDP port %d: %w", tcpAddr.Port, err)
+	if runtime.GOOS == "windows" {
+		// Windows reserves port ranges, per protocol, for Hyper-V and WSL.
+		failed = fmt.Errorf("%w (Windows may have reserved this port for something else - try another port)", failed)
+	}
+	if _, port, e := net.SplitHostPort(s.cfg.Listen); e != nil || port != "0" {
+		return failed
+	}
+	// Any port will do (that is how the tests run): the system picked a TCP
+	// port whose number is not available for UDP. Let it pick the UDP port
+	// first instead and take the same number for TCP.
+	for i := 0; i < 50; i++ {
+		udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: tcpAddr.IP, Zone: tcpAddr.Zone})
+		if err != nil {
+			return failed
+		}
+		port := udp.LocalAddr().(*net.UDPAddr).Port
+		ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: tcpAddr.IP, Port: port, Zone: tcpAddr.Zone})
+		if err == nil {
+			s.ln, s.udp = ln, udp
+			return nil
+		}
+		udp.Close()
+	}
+	return failed
 }
 
 // Addr returns the address the server is listening on.
