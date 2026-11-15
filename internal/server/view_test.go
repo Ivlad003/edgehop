@@ -12,6 +12,7 @@ import (
 	"github.com/Ivlad003/edgehop/internal/proto"
 	"github.com/Ivlad003/edgehop/internal/rview"
 	"github.com/Ivlad003/edgehop/internal/secure"
+	"github.com/Ivlad003/edgehop/internal/server"
 	"github.com/Ivlad003/edgehop/internal/wincap"
 )
 
@@ -27,11 +28,18 @@ func (fakeWindows) Open(uint64) (wincap.Capturer, error) { return nil, wincap.Er
 // client opens it, and the two talk over it - while the mouse and keyboard
 // keep working as before.
 func TestViewConnectionToAClient(t *testing.T) {
-	r := startServer(t, "desk", []string{"desk", "mac", "old"}, nil)
+	r := startServerWith(t, "desk", []string{"desk", "mac", "old"}, nil, false, func(c *server.Config) {
+		c.ShowsWindows = true
+	})
 	mac, _ := r.connectWith("mac", 1000, 500, func(c *client.Config) {
 		c.View = &rview.Source{Windows: fakeWindows{}, Injector: &fakeInjector{}, Name: "mac", OS: "test"}
 	})
 	r.connect("old", 800, 600) // a client that does not offer its windows
+
+	// The client learns that the server is ready to show its windows.
+	if c := r.clients["mac"]; !c.ServerShowsWindows() || c.ServerName() != "desk" {
+		t.Errorf("the client sees the server as %q, shows windows: %v", c.ServerName(), c.ServerShowsWindows())
+	}
 
 	peers := r.srv.ViewPeers()
 	if len(peers) != 1 || peers[0].Name != "mac" {
@@ -94,4 +102,16 @@ func TestViewConnectionToAClient(t *testing.T) {
 	waitPos(t, mac, 2, 250)
 	r.cap.move(40, 10)
 	waitPos(t, mac, 42, 260)
+}
+
+// A server that has remote windows turned off says so, and the client
+// reports that the other side is not ready.
+func TestClientSeesThatTheServerShowsNoWindows(t *testing.T) {
+	r := startServer(t, "desk", []string{"desk", "mac"}, nil)
+	r.connectWith("mac", 1000, 500, func(c *client.Config) {
+		c.View = &rview.Source{Windows: fakeWindows{}, Injector: &fakeInjector{}, Name: "mac", OS: "test"}
+	})
+	if c := r.clients["mac"]; c.ServerShowsWindows() || c.ServerName() != "desk" {
+		t.Errorf("the client sees the server as %q, shows windows: %v", c.ServerName(), c.ServerShowsWindows())
+	}
 }

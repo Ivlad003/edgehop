@@ -73,6 +73,11 @@ type Config struct {
 	// DropDir is where files that another computer sends to this one are
 	// saved. Empty means this computer does not accept sent files.
 	DropDir string
+
+	// ShowsWindows tells the clients that this server shows the windows of
+	// clients that allow it (remote windows, experimental), so their
+	// settings pages can say whether this side is ready.
+	ShowsWindows bool
 }
 
 // autoScale returns how much faster the cursor should move on a client whose
@@ -536,6 +541,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	if s.cfg.DropDir != "" {
 		caps |= proto.CapDrop
+	}
+	if s.cfg.ShowsWindows {
+		caps |= proto.CapView
 	}
 	if err := ch.Send(proto.AppendWelcome(nil, sess.id, s.cfg.Name, caps)); err != nil {
 		return

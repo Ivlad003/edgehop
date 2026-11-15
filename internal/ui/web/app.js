@@ -80,7 +80,9 @@ const TEXT = {
     rwinOpen: "Обрати вікно",
     rwinText: "Вікно іншого комп'ютера відкривається тут окремим вікном; миша й клавіатура в ньому працюють на тому комп'ютері. Дозволили показ: {0}.",
     rwinNone: "Жоден підключений комп'ютер ще не дозволив показувати свої вікна: увімкніть там «Віддалені вікна» в налаштуваннях edgehop і збережіть.",
-    rwinAllowed: "Комп'ютер з мишею може показувати вікна цього комп'ютера й керувати ними.",
+    rwinClientReady: "Готово. Вікна цього комп'ютера відкриваються на комп'ютері «{0}»: на його сторінці edgehop у блоці «Віддалені вікна» натисніть «Обрати вікно». Тут, на цьому комп'ютері, список вікон не показується.",
+    rwinClientNotYet: "Цей комп'ютер дозволяє показувати свої вікна, але комп'ютер «{0}» ще не готовий їх показувати. Що зробити там:\n1. Оновити edgehop до 0.4.1 або новішої версії й перезапустити його: закрити (Ctrl+C у його вікні) і запустити знову — сам він не перезапускається.\n2. У налаштуваннях поставити позначку «Віддалені вікна (експериментально)».\n3. Натиснути «Зберегти і запустити».",
+    rwinClientWaiting: "Цей комп'ютер дозволяє показувати свої вікна. Щойно він підключиться до комп'ютера з мишею, тут буде видно, чи готова та сторона.",
     speedHint: "Швидкість курсора підбирається автоматично під розмір кожного екрана. Число нижче множить її: 1 — як є, 1.5 — у півтора раза швидше.",
     speed: 'Швидкість курсора',
     swap: 'Поміняти Alt і Win/Cmd (PC-клавіатура ↔ Mac)',
@@ -190,7 +192,9 @@ const TEXT = {
     rwinOpen: "Choose a window",
     rwinText: "A window of another computer opens here in a window of its own; the mouse and keyboard in it work on that computer. Allowed by: {0}.",
     rwinNone: "No connected computer has allowed showing its windows yet: turn on “Remote windows” in the edgehop settings there and save.",
-    rwinAllowed: "The computer with the mouse may show this computer's windows and control them.",
+    rwinClientReady: "Ready. This computer's windows open on the computer “{0}”: on its edgehop page, press “Choose a window” in the “Remote windows” card. The list of windows is not shown here, on this computer.",
+    rwinClientNotYet: "This computer allows showing its windows, but the computer “{0}” is not ready to show them yet. What to do there:\n1. Update edgehop to 0.4.1 or newer and restart it: quit it (Ctrl+C in its window) and start it again - it does not restart by itself.\n2. Tick “Remote windows (experimental)” in the settings.\n3. Press “Save and start”.",
+    rwinClientWaiting: "This computer allows showing its windows. Once it is connected to the computer with the mouse, this card tells whether that side is ready.",
     speedHint: "The cursor speed is matched to the size of each screen automatically. The number below multiplies it: 1 keeps it, 1.5 makes it one and a half times faster.",
     speed: 'Cursor speed',
     swap: 'Swap Alt and Win/Cmd (PC keyboard ↔ Mac)',
@@ -607,7 +611,6 @@ function renderLive(force) {
     line.textContent = !st.connected ? clientProblem(st)
       : st.active ? t('clientActive', st.server) : t('clientConnected', st.server);
     if (st.clipboard) hint.textContent = t('clipLast', st.clipboard);
-    if (st.view) hint.textContent += (hint.textContent ? ' ' : '') + t('rwinAllowed');
   }
 
   checkSend();
@@ -677,12 +680,27 @@ function renderLog() {
 
 function renderRemoteWindows() {
   const st = S && S.engine.running ? (S.engine.status || null) : null;
-  const on = !!(st && st.role === 'server' && st.view && st.view.url);
-  show('rwin-card', on);
-  if (!on) return;
-  const names = (st.screens || []).filter((s) => !s.self && s.connected && s.view).map((s) => s.name);
-  $('rwin-open').disabled = names.length === 0;
-  $('rwin-text').textContent = names.length === 0 ? t('rwinNone') : t('rwinText', names.join(', '));
+  const server = !!(st && st.role === 'server' && st.view && st.view.url);
+  const client = !!(st && st.role === 'client' && st.view);
+  show('rwin-card', server || client);
+  show('rwin-open', server);
+  const text = $('rwin-text');
+  text.className = 'hint';
+  if (server) {
+    const names = (st.screens || []).filter((s) => !s.self && s.connected && s.view).map((s) => s.name);
+    $('rwin-open').disabled = names.length === 0;
+    text.textContent = names.length === 0 ? t('rwinNone') : t('rwinText', names.join(', '));
+  } else if (client) {
+    // The windows are opened on the other computer; say where, and whether
+    // that side is ready - from here this is the only way to tell.
+    const name = st.serverName || st.server;
+    if (!st.connected) text.textContent = t('rwinClientWaiting');
+    else if (st.viewServer) text.textContent = t('rwinClientReady', name);
+    else {
+      text.textContent = t('rwinClientNotYet', name);
+      text.className = 'note steps-note';
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

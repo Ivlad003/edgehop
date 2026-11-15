@@ -271,6 +271,7 @@ code.cmd { display: block; flex: 1 1 320px; padding: 8px 10px; }
   font-size: 14px;
 }
 .note:empty { display: none; }
+.steps-note { white-space: pre-line; background: var(--warn-soft); }
 
 .row-cap { align-self: center; color: var(--muted); font-size: 13px; white-space: nowrap; }
 

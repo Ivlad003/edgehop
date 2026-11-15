@@ -64,6 +64,8 @@ type Client struct {
 	clipCount atomic.Int64             // completed clipboard transfers
 	link      atomic.Pointer[dataLink] // the data connection of the current session
 	views     atomic.Int32             // windows of this computer being shown right now
+	srvName   atomic.Value             // string: the server's screen name while connected
+	srvView   atomic.Bool              // the server shows windows of its clients
 }
 
 // New creates a client.
@@ -99,11 +101,13 @@ func (c *Client) SendFiles(paths []string) error {
 
 // ServerName returns the screen name of the server, "" while not connected.
 func (c *Client) ServerName() string {
-	if l := c.link.Load(); l != nil {
-		return l.server
-	}
-	return ""
+	name, _ := c.srvName.Load().(string)
+	return name
 }
+
+// ServerShowsWindows reports whether the server is ready to show windows of
+// this computer (remote windows are on there, and its edgehop says so).
+func (c *Client) ServerShowsWindows() bool { return c.srvView.Load() }
 
 // CanSendFiles reports whether files can be sent to the server right now.
 func (c *Client) CanSendFiles() bool {
@@ -233,9 +237,13 @@ func (c *Client) session(ctx context.Context) error {
 	logx.Infof("connected to %q at %s as %q, screen %dx%d", welcome.Name, c.cfg.Server, c.cfg.Name, w, h)
 	c.connected.Store(true)
 	c.lastErr.Store("")
+	c.srvName.Store(welcome.Name)
+	c.srvView.Store(welcome.Caps&proto.CapView != 0)
 	defer func() {
 		c.connected.Store(false)
 		c.active.Store(false)
+		c.srvName.Store("")
+		c.srvView.Store(false)
 	}()
 
 	st := &state{inj: c.inj}

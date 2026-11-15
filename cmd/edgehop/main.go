@@ -361,7 +361,9 @@ type clientStatus struct {
 	ServerName string `json:"serverName,omitempty"`
 	Files      bool   `json:"files,omitempty"`
 	// View: the server may show and control this computer's windows.
-	View bool `json:"view,omitempty"`
+	// ViewServer: and the server is ready to do so.
+	View       bool `json:"view,omitempty"`
+	ViewServer bool `json:"viewServer,omitempty"`
 	sendStatus
 }
 
@@ -475,7 +477,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 		Name: cfg.Name, Listen: cfg.Listen, Key: cfg.Key,
 		Layout: lay, Screens: screens, Hotkey: hotkey, AutoScale: true,
 		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
-		DropDir: cfg.DownloadDir(),
+		DropDir: cfg.DownloadDir(), ShowsWindows: cfg.RemoteWindows,
 	}, capture)
 	files := &sender{downloads: cfg.DownloadDir()}
 	go files.run(ctx, cmds, srv.SendFiles)
@@ -598,7 +600,7 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 		go reportStatus(ctx, func() any {
 			return clientStatus{Role: "client", Name: cfg.Name, Server: cfg.Server,
 				Connected: c.Connected(), Active: c.Active(), Error: c.LastError(), Clipboard: c.ClipboardStatus(),
-				ServerName: c.ServerName(), Files: c.CanSendFiles(), View: view != nil, sendStatus: files.status()}
+				ServerName: c.ServerName(), Files: c.CanSendFiles(), View: view != nil, ViewServer: c.ServerShowsWindows(), sendStatus: files.status()}
 		})
 	}
 	return c.Run(ctx)
