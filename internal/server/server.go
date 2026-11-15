@@ -100,6 +100,7 @@ type session struct {
 	pong    atomic.Int64 // unix nanoseconds of the last pong
 	rtt     atomic.Int64 // nanoseconds
 	closed  atomic.Bool
+	joined  atomic.Bool // the run loop knows this session: the cursor can go there
 
 	caps   uint32
 	data   atomic.Pointer[secure.Channel] // the data connection, once the client opened it
@@ -208,13 +209,16 @@ func (s *Server) Addr() *net.TCPAddr { return s.ln.Addr().(*net.TCPAddr) }
 // server itself.
 func (s *Server) Focus() string { return s.focusName.Load().(string) }
 
-// Connected returns the names of the connected clients, sorted.
+// Connected returns the names of the connected clients, sorted. A client
+// counts from the moment the cursor can move to it.
 func (s *Server) Connected() []string {
 	s.idMu.RLock()
 	defer s.idMu.RUnlock()
 	out := make([]string, 0, len(s.byID))
 	for _, sess := range s.byID {
-		out = append(out, sess.name)
+		if sess.joined.Load() {
+			out = append(out, sess.name)
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -267,6 +271,9 @@ func (s *Server) Clients() []ClientInfo {
 	defer s.idMu.RUnlock()
 	out := make([]ClientInfo, 0, len(s.byID))
 	for _, sess := range s.byID {
+		if !sess.joined.Load() {
+			continue
+		}
 		host, _, _ := net.SplitHostPort(sess.remote)
 		out = append(out, ClientInfo{
 			Name: sess.name, OS: sess.os, W: sess.w, H: sess.h, Addr: host,
@@ -608,6 +615,7 @@ func (s *Server) handleCtl(m ctlMsg) {
 			old.close()
 		}
 		s.byName[sess.name] = sess
+		sess.joined.Store(true)
 		s.updateArmed()
 		logx.Infof("connected: %s (%s, %dx%d) from %s, cursor speed x%.2f", sess.name, sess.os, sess.w, sess.h, sess.remote, sess.scale)
 		return
