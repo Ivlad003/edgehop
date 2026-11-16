@@ -14,6 +14,7 @@ import (
 
 	"github.com/Ivlad003/edgehop/internal/clip"
 	"github.com/Ivlad003/edgehop/internal/input"
+	"github.com/Ivlad003/edgehop/internal/layout"
 	"github.com/Ivlad003/edgehop/internal/logx"
 	"github.com/Ivlad003/edgehop/internal/proto"
 	"github.com/Ivlad003/edgehop/internal/rview"
@@ -55,6 +56,23 @@ type Config struct {
 	// moving with the mouse right now (id 0: none). It lets a window that is
 	// pushed against the edge towards the server open over there.
 	Dragged func() (id uint64, w, h int)
+
+	// Shows tells the server that this computer shows the server's own
+	// windows (remote windows, the other direction; see OpenView). OnWindow,
+	// when set, is called when the server sends one of its windows over.
+	Shows    bool
+	OnWindow func(SentWindow)
+}
+
+// SentWindow is a window of the server that the user sent to this computer.
+type SentWindow struct {
+	Peer string // the server's screen name
+	ID   uint64 // the window, as the server numbers it
+	W, H int    // its size in the server's pixels
+	// Side and Frac say where the cursor entered this desktop: which edge,
+	// and how far along it (0..1).
+	Side layout.Side
+	Frac float64
 }
 
 // Client is a connection to a server that reconnects forever.
@@ -71,6 +89,8 @@ type Client struct {
 	views     atomic.Int32             // windows of this computer being shown right now
 	srvName   atomic.Value             // string: the server's screen name while connected
 	srvView   atomic.Bool              // the server shows windows of its clients
+	srvGives  atomic.Bool              // the server lets its own windows be shown
+	sessID    atomic.Uint32            // the current session with the server, 0 while not connected
 }
 
 // New creates a client.
@@ -113,6 +133,10 @@ func (c *Client) ServerName() string {
 // ServerShowsWindows reports whether the server is ready to show windows of
 // this computer (remote windows are on there, and its edgehop says so).
 func (c *Client) ServerShowsWindows() bool { return c.srvView.Load() }
+
+// ServerGivesWindows reports whether the server lets this computer show the
+// server's own windows (see OpenView).
+func (c *Client) ServerGivesWindows() bool { return c.srvGives.Load() }
 
 // CanSendFiles reports whether files can be sent to the server right now.
 func (c *Client) CanSendFiles() bool {
@@ -223,6 +247,9 @@ func (c *Client) session(ctx context.Context) error {
 			caps |= proto.CapDrag
 		}
 	}
+	if c.cfg.Shows {
+		caps |= proto.CapShow
+	}
 	if err := ch.Send(proto.AppendHello(nil, c.cfg.Name, runtime.GOOS, w, h, caps)); err != nil {
 		return err
 	}
@@ -247,11 +274,15 @@ func (c *Client) session(ctx context.Context) error {
 	c.lastErr.Store("")
 	c.srvName.Store(welcome.Name)
 	c.srvView.Store(welcome.Caps&proto.CapView != 0)
+	c.srvGives.Store(c.cfg.Shows && welcome.Caps&proto.CapSource != 0)
+	c.sessID.Store(welcome.Session)
 	defer func() {
 		c.connected.Store(false)
 		c.active.Store(false)
 		c.srvName.Store("")
 		c.srvView.Store(false)
+		c.srvGives.Store(false)
+		c.sessID.Store(0)
 	}()
 
 	st := &state{inj: c.inj}
@@ -338,6 +369,13 @@ func (c *Client) session(ctx context.Context) error {
 		case proto.TViewOpen:
 			if c.cfg.View != nil {
 				go c.openView(welcome.Session, m.Bundle, stop)
+			}
+		case proto.TWindowGo:
+			if c.cfg.Shows && c.cfg.OnWindow != nil && m.Button <= uint8(layout.Bottom) {
+				go c.cfg.OnWindow(SentWindow{
+					Peer: welcome.Name, ID: m.T, W: int(m.W), H: int(m.H),
+					Side: layout.Side(m.Button), Frac: float64(m.Seq) / 0xFFFF,
+				})
 			}
 		case proto.TClipSend:
 			if link != nil {

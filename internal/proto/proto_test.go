@@ -40,6 +40,11 @@ func TestRoundTrip(t *testing.T) {
 	check("pong", AppendPong(nil, 5), Msg{Type: TPong, T: 5})
 	check("leave", AppendLeave(nil), Msg{Type: TLeave})
 	check("udphello", AppendUDPHello(nil), Msg{Type: TUDPHello})
+	check("viewask", AppendViewAsk(nil, 0xCAFE), Msg{Type: TViewAsk, Session: 0xCAFE})
+	check("windowgo", AppendWindowGo(nil, 1<<40|7, 1280, 800, 2, 0.5),
+		Msg{Type: TWindowGo, T: 1<<40 | 7, W: 1280, H: 800, Button: 2, Seq: 0x8000})
+	check("windowgo at the far end", AppendWindowGo(nil, 3, 10, 20, 1, 7),
+		Msg{Type: TWindowGo, T: 3, W: 10, H: 20, Button: 1, Seq: 0xFFFF})
 }
 
 func TestDecodeErrors(t *testing.T) {

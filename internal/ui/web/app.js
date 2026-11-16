@@ -74,13 +74,16 @@ const TEXT = {
     sendStopped: "edgehop зупинено",
     savedIn: "Файли, надіслані на цей комп'ютер, зберігаються в {0}",
     rwinServer: "Віддалені вікна (експериментально): показувати тут, в окремих вікнах, вікна інших комп'ютерів",
-    rwinClient: "Віддалені вікна (експериментально): дозволити комп'ютеру з мишею показувати вікна цього комп'ютера й керувати ними",
-    rwinHint: "Вмикається на обох комп'ютерах. Показувати можна вікна комп'ютерів з Windows і macOS.",
+    rwinClient: "Віддалені вікна (експериментально): дозволити комп'ютеру з мишею показувати вікна цього комп'ютера й керувати ними, а його вікна показувати тут",
+    rwinHint: "Вмикається на обох комп'ютерах. Показувати можна вікна комп'ютерів з Windows і macOS. Комп'ютер з мишею віддає свої вікна іншим, лише якщо він — Mac.",
     rwinTitle: "Віддалені вікна (експериментально)",
     rwinOpen: "Обрати вікно",
     rwinText: "Вікно іншого комп'ютера відкривається тут окремим вікном; миша й клавіатура в ньому працюють на тому комп'ютері. Дозволили показ: {0}.",
     rwinNone: "Жоден підключений комп'ютер ще не дозволив показувати свої вікна: увімкніть там «Віддалені вікна» в налаштуваннях edgehop і збережіть.",
-    rwinClientReady: "Готово. Вікна цього комп'ютера відкриваються на комп'ютері «{0}»: на його сторінці edgehop у блоці «Віддалені вікна» натисніть «Обрати вікно». Тут, на цьому комп'ютері, список вікон не показується.",
+    rwinClientReady: "Вікна цього комп'ютера відкриваються на комп'ютері «{0}»: на його сторінці edgehop у блоці «Віддалені вікна» натисніть «Обрати вікно», або тут потягніть вікно мишею за край екрана в його бік і потримайте.",
+    rwinGive: "Вікно цього комп'ютера можна відправити на інший ({1}): затисніть {0} і виведіть курсор за край екрана в той бік. Вікно, у якому ви працюєте, відкриється там. Можна й тоді, коли ви саме тягнете це вікно мишею.",
+    rwinClientShow: "Вікна комп'ютера «{0}» відкриваються тут: натисніть «Обрати вікно». Або там затисніть клавіші відправлення вікна (типово Ctrl+Option) і виведіть курсор за край екрана в бік цього комп'ютера.",
+    rwinClientShowNo: "Свої вікна комп'ютер «{0}» сюди не віддає. Так уміє лише Mac з edgehop 0.7.0 або новішим, де ввімкнено «Віддалені вікна».",
     rwinClientNotYet: "Цей комп'ютер дозволяє показувати свої вікна, але комп'ютер «{0}» ще не готовий їх показувати. Що зробити там:\n1. Оновити edgehop до 0.4.1 або новішої версії й перезапустити його: закрити (Ctrl+C у його вікні) і запустити знову — сам він не перезапускається.\n2. У налаштуваннях поставити позначку «Віддалені вікна (експериментально)».\n3. Натиснути «Зберегти і запустити».",
     rwinClientWaiting: "Цей комп'ютер дозволяє показувати свої вікна. Щойно він підключиться до комп'ютера з мишею, тут буде видно, чи готова та сторона.",
     speedHint: "Швидкість курсора підбирається автоматично під розмір кожного екрана. Число нижче множить її: 1 — як є, 1.5 — у півтора раза швидше.",
@@ -186,13 +189,16 @@ const TEXT = {
     sendStopped: "edgehop was stopped",
     savedIn: "Files sent to this computer are saved in {0}",
     rwinServer: "Remote windows (experimental): show windows of the other computers here, in windows of their own",
-    rwinClient: "Remote windows (experimental): let the computer with the mouse show this computer's windows and control them",
-    rwinHint: "Turn it on on both computers. Windows of Windows and macOS computers can be shown.",
+    rwinClient: "Remote windows (experimental): let the computer with the mouse show this computer's windows and control them, and show its windows here",
+    rwinHint: "Turn it on on both computers. Windows of Windows and macOS computers can be shown. The computer with the mouse offers its own windows to the others only if it is a Mac.",
     rwinTitle: "Remote windows (experimental)",
     rwinOpen: "Choose a window",
     rwinText: "A window of another computer opens here in a window of its own; the mouse and keyboard in it work on that computer. Allowed by: {0}.",
     rwinNone: "No connected computer has allowed showing its windows yet: turn on “Remote windows” in the edgehop settings there and save.",
-    rwinClientReady: "Ready. This computer's windows open on the computer “{0}”: on its edgehop page, press “Choose a window” in the “Remote windows” card. The list of windows is not shown here, on this computer.",
+    rwinClientReady: "This computer's windows open on the computer “{0}”: on its edgehop page, press “Choose a window” in the “Remote windows” card, or drag a window here against the screen edge towards it and hold it there.",
+    rwinGive: "A window of this computer can be sent to another one ({1}): hold {0} and take the cursor over the screen edge in that direction. The window you work in opens over there. This also works while you are dragging that window with the mouse.",
+    rwinClientShow: "Windows of the computer “{0}” open here: press “Choose a window”. Or, over there, hold the keys for sending a window (Ctrl+Option by default) and take the cursor over the screen edge towards this computer.",
+    rwinClientShowNo: "The computer “{0}” does not offer its own windows to this one. Only a Mac with edgehop 0.7.0 or newer and “Remote windows” turned on does.",
     rwinClientNotYet: "This computer allows showing its windows, but the computer “{0}” is not ready to show them yet. What to do there:\n1. Update edgehop to 0.4.1 or newer and restart it: quit it (Ctrl+C in its window) and start it again - it does not restart by itself.\n2. Tick “Remote windows (experimental)” in the settings.\n3. Press “Save and start”.",
     rwinClientWaiting: "This computer allows showing its windows. Once it is connected to the computer with the mouse, this card tells whether that side is ready.",
     speedHint: "The cursor speed is matched to the size of each screen automatically. The number below multiplies it: 1 keeps it, 1.5 makes it one and a half times faster.",
@@ -681,25 +687,37 @@ function renderLog() {
 function renderRemoteWindows() {
   const st = S && S.engine.running ? (S.engine.status || null) : null;
   const server = !!(st && st.role === 'server' && st.view && st.view.url);
-  const client = !!(st && st.role === 'client' && st.view);
+  const client = !!(st && st.role === 'client' && (st.view || st.show));
   show('rwin-card', server || client);
-  show('rwin-open', server);
+  show('rwin-open', server || (client && !!(st.show && st.show.url)));
   const text = $('rwin-text');
   text.className = 'hint';
+  text.style.whiteSpace = 'pre-line';
   if (server) {
     const names = (st.screens || []).filter((s) => !s.self && s.connected && s.view).map((s) => s.name);
     $('rwin-open').disabled = names.length === 0;
-    text.textContent = names.length === 0 ? t('rwinNone') : t('rwinText', names.join(', '));
+    let msg = names.length === 0 ? t('rwinNone') : t('rwinText', names.join(', '));
+    // The other direction: this computer's own windows, shown over there.
+    const takers = (st.screens || []).filter((s) => !s.self && s.connected && s.shows).map((s) => s.name);
+    if (st.give && st.give.keys && takers.length) msg += '\n\n' + t('rwinGive', st.give.keys, takers.join(', '));
+    text.textContent = msg;
   } else if (client) {
-    // The windows are opened on the other computer; say where, and whether
-    // that side is ready - from here this is the only way to tell.
+    // This computer's windows are opened on the other computer; say where,
+    // and whether that side is ready - from here this is the only way to tell.
     const name = st.serverName || st.server;
-    if (!st.connected) text.textContent = t('rwinClientWaiting');
-    else if (st.viewServer) text.textContent = t('rwinClientReady', name);
-    else {
-      text.textContent = t('rwinClientNotYet', name);
-      text.className = 'note steps-note';
+    const parts = [];
+    if (st.view) {
+      if (!st.connected) parts.push(t('rwinClientWaiting'));
+      else if (st.viewServer) parts.push(t('rwinClientReady', name));
+      else {
+        parts.push(t('rwinClientNotYet', name));
+        text.className = 'note steps-note';
+      }
     }
+    // The other direction: the other computer's windows, opened here.
+    if (st.show && st.connected) parts.push(t(st.showServer ? 'rwinClientShow' : 'rwinClientShowNo', name));
+    $('rwin-open').disabled = !(st.connected && st.showServer);
+    text.textContent = parts.join('\n\n');
   }
 }
 
@@ -1038,7 +1056,10 @@ function init() {
   $('f-clip').addEventListener('change', () => { form.clipboard = $('f-clip').checked; });
   $('f-rwin').addEventListener('change', () => { form.remoteWindows = $('f-rwin').checked; });
   $('rwin-open').addEventListener('click', () => {
-    const view = S && S.engine.running && S.engine.status ? S.engine.status.view : null;
+    // On the server the list is of the clients' windows (view), on a client
+    // of the server's (show).
+    const st = S && S.engine.running && S.engine.status ? S.engine.status : null;
+    const view = st && ((st.view && st.view.url ? st.view : null) || st.show);
     if (view && view.url) window.open(view.url, 'edgehop-windows', 'popup=yes,width=560,height=640');
   });
   $('f-clipmax').addEventListener('input', () => { form.clipboardMaxMB = parseInt($('f-clipmax').value, 10) || 0; });

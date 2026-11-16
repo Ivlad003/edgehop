@@ -36,6 +36,8 @@ const (
 	TViewHello = 17 // client -> server, first frame of a view connection: session id, N
 	TDragQuery = 18 // server -> client: is a window being dragged with the mouse right now? (question N)
 	TDragReply = 19 // client -> server: answer N - the window's id and size, id 0 for "none"
+	TViewAsk   = 20 // client -> server, first frame of a connection: session id - "show me your windows on this one"
+	TWindowGo  = 21 // server -> client: open this window of mine where the cursor comes in (id, size, edge, position)
 )
 
 // Capabilities, exchanged in Hello and Welcome. A side only uses a feature
@@ -45,6 +47,8 @@ const (
 	CapDrop      = 1 << 1 // accepts files sent on purpose, over the data connection
 	CapView      = 1 << 2 // its windows can be shown and controlled from the server (experimental)
 	CapDrag      = 1 << 3 // can tell which of its windows is being dragged (TDragQuery)
+	CapSource    = 1 << 4 // server: its own windows can be shown on clients (TViewAsk)
+	CapShow      = 1 << 5 // client: shows windows of the server (TWindowGo)
 )
 
 // Msg is a decoded message. Only the fields of its Type are meaningful.
@@ -127,6 +131,23 @@ func AppendDragReply(b []byte, id uint32, window uint64, w, h int) []byte {
 	b = be.AppendUint32(append(b, TDragReply), id)
 	b = be.AppendUint64(b, window)
 	return be.AppendUint32(be.AppendUint32(b, uint32(w)), uint32(h))
+}
+
+func AppendViewAsk(b []byte, session uint32) []byte {
+	return be.AppendUint32(append(b, TViewAsk), session)
+}
+
+// AppendWindowGo: side is the edge of the client's desktop the cursor comes
+// in through, frac how far along it (0..1).
+func AppendWindowGo(b []byte, window uint64, w, h int, side uint8, frac float64) []byte {
+	b = be.AppendUint64(append(b, TWindowGo), window)
+	b = be.AppendUint32(be.AppendUint32(b, uint32(w)), uint32(h))
+	if frac < 0 {
+		frac = 0
+	} else if frac > 1 {
+		frac = 1
+	}
+	return be.AppendUint16(append(b, side), uint16(frac*0xFFFF+0.5))
 }
 
 func AppendReject(b []byte, reason string) []byte {
@@ -258,8 +279,13 @@ func Decode(b []byte) (Msg, error) {
 		if r.err == nil && len(r.b) >= 4 {
 			m.Caps = r.u32()
 		}
-	case TDataHello:
+	case TDataHello, TViewAsk:
 		m.Session = r.u32()
+	case TWindowGo:
+		m.T = r.u64() // the window's id
+		m.W, m.H = r.u32(), r.u32()
+		m.Button = r.u8()       // the edge
+		m.Seq = uint32(r.u16()) // the position along it, 0..65535
 	case TClipState:
 		m.Changed = r.u8() != 0
 	case TClipSend, TViewOpen, TDragQuery:

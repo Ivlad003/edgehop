@@ -326,6 +326,10 @@ func Monitors() []layout.Rect {
 	return []layout.Rect{{X: 0, Y: 0, W: w, H: h}}
 }
 
+// OwnInjection reports whether an injector can work next to a capture in the
+// same program (Options.Own). Not on this system.
+func OwnInjection() bool { return false }
+
 // SelfTest is only implemented on Windows.
 func SelfTest(out io.Writer, grab bool) error {
 	return errors.New("the self test is only available on Windows")

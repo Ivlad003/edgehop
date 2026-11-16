@@ -414,6 +414,16 @@ func (c *macCapturer) Hide(on bool)    {}
 func RestoreHidden() int { return 0 }
 
 // Dragged returns the window the user is moving with the mouse right now.
-// This system offers no way to tell, so dragging a window to another
-// computer starts only on Windows.
+// This system offers no way to tell; Frontmost is the next best thing, as a
+// window that is being moved is in front of the others.
 func (System) Dragged() (Window, bool) { return Window{}, false }
+
+// Frontmost returns the window the user works in right now, if it is one
+// that can be shown remotely: the list comes from front to back.
+func (s System) Frontmost() (Window, bool) {
+	wins, err := s.List()
+	if err != nil || len(wins) == 0 {
+		return Window{}, false
+	}
+	return wins[0], true
+}

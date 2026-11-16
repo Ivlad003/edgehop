@@ -33,6 +33,13 @@ func TestLiveListAndCapture(t *testing.T) {
 	if len(wins) == 0 {
 		t.Skip("no windows on this desktop, capturing not verified")
 	}
+	// The window in front is the one that goes along when the user sends a
+	// window to another computer.
+	if w, ok := sys.Frontmost(); !ok || w.ID != wins[0].ID || w.W <= 0 || w.H <= 0 {
+		t.Errorf("the window in front: %+v (%v), want %+v", w, ok, wins[0])
+	} else {
+		t.Logf("in front: %q of %q", w.Title, w.App)
+	}
 	captured := 0
 	for _, w := range wins {
 		c, err := sys.Open(w.ID)

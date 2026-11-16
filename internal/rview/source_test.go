@@ -206,10 +206,17 @@ type update struct {
 
 func startSource(t *testing.T, desk *fakeDesk, inj *fakeInjector) *testViewer {
 	t.Helper()
+	return startSourceMapped(t, desk, inj, nil)
+}
+
+// startSourceMapped is startSource with a translation for the keys that
+// arrive (see ServeMapped).
+func startSourceMapped(t *testing.T, desk *fakeDesk, inj *fakeInjector, keymap map[uint16]uint16) *testViewer {
+	t.Helper()
 	a, b := newPipe()
 	src := &Source{Windows: desk, Injector: inj, Name: "win", OS: "windows", Fast: 5 * time.Millisecond, Slow: 20 * time.Millisecond}
 	done := make(chan struct{})
-	go func() { src.Serve(a); close(done) }()
+	go func() { src.ServeMapped(a, keymap); close(done) }()
 	t.Cleanup(func() {
 		b.Close()
 		select {
@@ -712,4 +719,28 @@ func TestResizeHideAndBlank(t *testing.T) {
 		}
 		return v.meta.Blank
 	})
+}
+
+// A server that shows its own window on a client gets back the keys it sent
+// there, swapped as it swaps them for that client; the swap is undone.
+func TestKeysAreTranslatedOnTheWayIn(t *testing.T) {
+	desk := newDesk(320, 240)
+	inj := &fakeInjector{}
+	v := startSourceMapped(t, desk, inj, map[uint16]uint16{keys.LeftCtrl: keys.LeftMeta})
+	v.start()
+	up := v.next(3 * time.Second)
+	v.ack(up.seq)
+
+	v.conn.Send([]byte{mKey, 0, keys.LeftCtrl, keys.Down})
+	v.conn.Send([]byte{mKey, 0, keys.C, keys.Down})
+	v.conn.Send([]byte{mKey, 0, keys.C, keys.Up})
+	v.conn.Send([]byte{mKey, 0, keys.LeftCtrl, keys.Up})
+	eventually(t, "four key events", func() bool { return inj.count() >= 4 })
+	want := []string{
+		fmt.Sprintf("key %d 1", keys.LeftMeta), fmt.Sprintf("key %d 1", keys.C),
+		fmt.Sprintf("key %d 0", keys.C), fmt.Sprintf("key %d 0", keys.LeftMeta),
+	}
+	if got := inj.take(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("keys = %v, want %v", got, want)
+	}
 }

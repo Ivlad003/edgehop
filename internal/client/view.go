@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"net"
 	"time"
 
@@ -53,4 +54,35 @@ func (c *Client) openView(session, id uint32, stop <-chan struct{}) {
 	logx.Debugf("remote windows: view %d opened", id)
 	c.cfg.View.Serve(ch)
 	logx.Debugf("remote windows: view %d closed", id)
+}
+
+// OpenView opens a connection on which the server shows its own windows
+// (remote windows, experimental - the other direction): this computer is the
+// viewer, and the server answers like any other source of windows. The
+// caller closes the connection when it is done.
+func (c *Client) OpenView() (*secure.Channel, error) {
+	session := c.sessID.Load()
+	if session == 0 {
+		return nil, errors.New("not connected to the server")
+	}
+	if !c.srvGives.Load() {
+		return nil, errors.New("the server does not let its windows be shown (remote windows are off there, it is not a Mac, or its edgehop is older)")
+	}
+	d := net.Dialer{Timeout: dialTimeout, KeepAlive: 10 * time.Second}
+	conn, err := d.Dial("tcp", c.cfg.Server)
+	if err != nil {
+		return nil, shortErr(err)
+	}
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+	}
+	ch, err := secure.ClientHandshake(conn, c.cfg.Key)
+	if err == nil {
+		err = ch.Send(proto.AppendViewAsk(nil, session))
+	}
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return ch, nil
 }

@@ -664,3 +664,26 @@ func TestWindowTakesTheSizeItIsGiven(t *testing.T) {
 		t.Fatalf("after Resize(520, 260) the window is %dx%d", f.W, f.H)
 	}
 }
+
+// The window in front is the one that goes along when the user sends a
+// window to another computer: it must be one of the windows that can be
+// shown.
+func TestFrontmostIsAListedWindow(t *testing.T) {
+	var sys System
+	w, ok := sys.Frontmost()
+	if !ok {
+		t.Log("no window that can be shown is in front right now")
+		return
+	}
+	wins, err := sys.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := false
+	for _, l := range wins {
+		listed = listed || l.ID == w.ID
+	}
+	if !listed || w.W <= 0 || w.H <= 0 {
+		t.Errorf("the window in front (%dx%d) is listed: %v", w.W, w.H, listed)
+	}
+}

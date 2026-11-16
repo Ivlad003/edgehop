@@ -24,6 +24,7 @@ import (
 	"github.com/Ivlad003/edgehop/internal/layout"
 	"github.com/Ivlad003/edgehop/internal/logx"
 	"github.com/Ivlad003/edgehop/internal/proto"
+	"github.com/Ivlad003/edgehop/internal/rview"
 	"github.com/Ivlad003/edgehop/internal/secure"
 )
 
@@ -86,6 +87,21 @@ type Config struct {
 	OnWindowDrag func(DraggedWindow)
 	DragHold     time.Duration
 	DragPush     float64
+
+	// View, when set, lets clients show the windows of this computer itself
+	// and control them (remote windows, the other direction; see give.go).
+	View *rview.Source
+
+	// WindowKeys, PickWindow and EndDrag send a window of this computer to a
+	// client: with exactly the modifier keys WindowKeys held (a mask of
+	// keys.Mod*), taking the cursor over an edge opens the window PickWindow
+	// names on the client behind that edge. PickWindow returns id 0 when
+	// there is no window to send. If the user was dragging the window with
+	// the mouse, EndDrag is called first to let go of it; side and frac say
+	// where on this desktop the cursor is.
+	WindowKeys uint8
+	PickWindow func() (id uint64, w, h int)
+	EndDrag    func(side layout.Side, frac float64)
 }
 
 // autoScale returns how much faster the cursor should move on a client whose
@@ -119,6 +135,9 @@ type session struct {
 	caps   uint32
 	data   atomic.Pointer[secure.Channel] // the data connection, once the client opened it
 	dataMu sync.Mutex                     // one bundle at a time towards this client
+
+	givenMu sync.Mutex
+	given   map[*secure.Channel]struct{} // views of this computer's windows the client has open
 
 	// Scratch buffers, used only by the run loop.
 	buf []byte
@@ -165,6 +184,7 @@ type Server struct {
 	views   viewHub   // remote windows (experimental)
 	drag    dragState // run loop only: a window pushed against the edge
 	dragSeq uint32
+	give    giveState // this computer's own windows, shown on clients
 
 	warnMu sync.Mutex
 	warned map[string]time.Time
@@ -277,6 +297,7 @@ type ClientInfo struct {
 	UDP   bool    `json:"udp"`   // cursor motion travels over UDP
 	Files bool    `json:"files"` // files can be sent to it
 	View  bool    `json:"view"`  // its windows can be shown here
+	Shows bool    `json:"shows"` // it shows windows of this computer
 	RTTMs float64 `json:"rttMs"` // last measured round trip, milliseconds
 }
 
@@ -324,6 +345,7 @@ func (s *Server) Clients() []ClientInfo {
 			UDP:   sess.udp.Load() != nil,
 			Files: sess.caps&proto.CapDrop != 0 && sess.data.Load() != nil,
 			View:  sess.caps&proto.CapView != 0,
+			Shows: sess.caps&proto.CapShow != 0,
 			RTTMs: math.Round(float64(sess.rtt.Load())/1e4) / 100,
 		})
 	}
@@ -478,6 +500,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.handleView(ch, hello.Session, hello.Bundle)
 		return
 	}
+	if err == nil && hello.Type == proto.TViewAsk {
+		conn.SetReadDeadline(time.Time{})
+		s.serveView(ch, hello.Session)
+		return
+	}
 	if err != nil || hello.Type != proto.THello {
 		conn.Close()
 		return
@@ -534,6 +561,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.idMu.Unlock()
 	defer func() {
 		sess.close()
+		sess.closeGiven()
 		if d := sess.data.Load(); d != nil {
 			d.Close()
 		}
@@ -555,6 +583,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	if s.cfg.ShowsWindows {
 		caps |= proto.CapView
+	}
+	if s.cfg.View != nil {
+		caps |= proto.CapSource
 	}
 	if err := ch.Send(proto.AppendWelcome(nil, sess.id, s.cfg.Name, caps)); err != nil {
 		return
@@ -768,7 +799,9 @@ func (s *Server) handleEvents(ev input.Event, events <-chan input.Event) {
 func (s *Server) handle(ev input.Event) {
 	switch ev.Kind {
 	case input.EvEdge:
-		if s.focus == nil {
+		// With the keys for sending a window held, the window goes along. A
+		// drag alone never leaves the screen.
+		if s.focus == nil && !s.sendWindow(ev) && !ev.Drag {
 			s.leaveLocal(ev.Side, ev.Frac)
 		}
 	case input.EvButton:

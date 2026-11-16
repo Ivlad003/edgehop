@@ -22,3 +22,6 @@ func RestoreHidden() int { return 0 }
 // This system offers no way to tell, so dragging a window to another
 // computer starts only on Windows.
 func (System) Dragged() (Window, bool) { return Window{}, false }
+
+// Frontmost returns the window the user works in right now.
+func (System) Frontmost() (Window, bool) { return Window{}, false }

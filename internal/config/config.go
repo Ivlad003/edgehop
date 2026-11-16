@@ -60,6 +60,11 @@ type Config struct {
 	// windows of the clients that allow it. Off unless set.
 	RemoteWindows bool `toml:"remote_windows,omitempty"`
 
+	// Server only, with remote windows: the modifier keys that send a window
+	// of this computer to another one when they are held while the cursor is
+	// taken over the edge. Default DefaultWindowKeys; "none" switches it off.
+	WindowKeys *string `toml:"window_keys"`
+
 	// Both: override the detected desktop size, "1920x1080".
 	ScreenSize string `toml:"screen_size,omitempty"`
 
@@ -180,6 +185,9 @@ func (c *Config) validate() error {
 		if _, err := c.Hotkey(); err != nil {
 			return err
 		}
+		if _, err := c.WindowMods(); err != nil {
+			return err
+		}
 		for name, s := range c.Screens {
 			if s.Scale < 0 {
 				return fmt.Errorf("screens.%s.scale must be positive", name)
@@ -258,6 +266,24 @@ func (c *Config) Hotkey() (keys.Hotkey, error) {
 		s = *c.ReleaseHotkey
 	}
 	return keys.ParseHotkey(s)
+}
+
+// DefaultWindowKeys are held while the cursor is taken over an edge to send
+// a window along (remote windows).
+const DefaultWindowKeys = "ctrl+alt"
+
+// WindowMods returns the modifier keys that send a window of this computer
+// to another one, as a mask of keys.Mod*; 0 means that is switched off.
+func (c *Config) WindowMods() (uint8, error) {
+	s := DefaultWindowKeys
+	if c.WindowKeys != nil {
+		s = *c.WindowKeys
+	}
+	mods, err := keys.ParseMods(s)
+	if err != nil {
+		return 0, fmt.Errorf("`window_keys`: %w", err)
+	}
+	return mods, nil
 }
 
 // ClipboardEnabled reports whether the clipboard is shared (default true).

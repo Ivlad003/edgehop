@@ -733,6 +733,12 @@ func (w *winInjector) ReleaseAll() {
 // ---------------------------------------------------------------------------
 // Self test
 
+// OwnInjection reports whether an injector can work next to a capture in the
+// same program (Options.Own). Not on Windows yet: while the mouse steers
+// another computer the cursor is parked in the middle of the screen, and
+// would have to be in two places at once.
+func OwnInjection() bool { return false }
+
 // SelfTest checks the input backend on this computer. Without grab it only
 // installs the hooks and lists the monitors. With grab it also switches to
 // remote mode for about half a second. During that time it feeds synthetic

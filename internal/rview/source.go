@@ -81,7 +81,8 @@ type metaInfo struct {
 type view struct {
 	src    *Source
 	conn   Conn
-	sendMu sync.Mutex // the pieces of one rectangle must stay together
+	keymap map[uint16]uint16 // see ServeMapped; nil: keys are typed as they arrive
+	sendMu sync.Mutex        // the pieces of one rectangle must stay together
 	acks   chan uint32
 	stop   chan struct{}
 	done   chan struct{} // closed when the picture loop has ended
@@ -95,9 +96,15 @@ type view struct {
 }
 
 // Serve handles one view connection until it closes.
-func (s *Source) Serve(conn Conn) {
+func (s *Source) Serve(conn Conn) { s.ServeMapped(conn, nil) }
+
+// ServeMapped is Serve with a translation for keys: a key that arrives as k
+// is typed as keymap[k]. A server that shows its own windows on a client
+// uses it to undo the key swaps it applies on the way to that client - the
+// keys in such a window come from the server's own keyboard, there and back.
+func (s *Source) ServeMapped(conn Conn, keymap map[uint16]uint16) {
 	v := &view{
-		src: s, conn: conn,
+		src: s, conn: conn, keymap: keymap,
 		acks: make(chan uint32, 8), stop: make(chan struct{}),
 		held: map[uint16]bool{}, buttons: map[uint8]bool{},
 	}
@@ -467,6 +474,9 @@ func (v *view) input(msg []byte) {
 			return
 		}
 		code, state := be.Uint16(msg[1:]), msg[3]
+		if to, ok := v.keymap[code]; ok {
+			code = to
+		}
 		if code == 0 || code >= keys.MaxCode {
 			return
 		}

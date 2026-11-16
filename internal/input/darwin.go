@@ -61,6 +61,7 @@ const (
 	fldDeltaY       = 5
 	fldAutorepeat   = 8
 	fldKeycode      = 9
+	fldUserData     = 42 // free for the program that creates the event
 	fldScrollIsCont = 88
 	fldScrollFixed1 = 93
 	fldScrollFixed2 = 94
@@ -97,6 +98,7 @@ var (
 	cgEventGetFlags             func(ev uintptr) uint64
 	cgEventSetFlags             func(ev uintptr, flags uint64)
 	cgEventGetLocation          func(ev uintptr) cgPoint
+	cgEventCreate               func(src uintptr) uintptr
 	cgEventSourceCreate         func(state int32) uintptr
 	cgEventCreateKeyboardEvent  func(src uintptr, keycode uint16, down bool) uintptr
 	// CGPoint is passed as two doubles, which is how the ABI passes it.
@@ -158,6 +160,7 @@ func macInit() error {
 		purego.RegisterLibFunc(&cgEventGetFlags, cg, "CGEventGetFlags")
 		purego.RegisterLibFunc(&cgEventSetFlags, cg, "CGEventSetFlags")
 		purego.RegisterLibFunc(&cgEventGetLocation, cg, "CGEventGetLocation")
+		purego.RegisterLibFunc(&cgEventCreate, cg, "CGEventCreate")
 		purego.RegisterLibFunc(&cgEventSourceCreate, cg, "CGEventSourceCreate")
 		purego.RegisterLibFunc(&cgEventCreateKeyboardEvent, cg, "CGEventCreateKeyboardEvent")
 		purego.RegisterLibFunc(&cgEventCreateMouseEvent, cg, "CGEventCreateMouseEvent")
@@ -244,6 +247,12 @@ func Monitors() []layout.Rect {
 	}
 	return out
 }
+
+// OwnInjection reports whether an injector can work next to a capture in the
+// same program (Options.Own): on macOS the event tap recognises the marked
+// events and, with the cursor only frozen, not parked, they land where they
+// should.
+func OwnInjection() bool { return true }
 
 // SelfTest is only implemented on Windows.
 func SelfTest(out io.Writer, grab bool) error {
@@ -372,6 +381,11 @@ func (c *macCapture) handle(etype uint32, ev uintptr) bool {
 		cgEventTapEnable(c.tap, true) // macOS switched the tap off; switch it back on
 		return false
 	}
+	if cgEventGetIntegerValueField(ev, fldUserData) == ownMark {
+		// Injected by this program itself, for a window of this computer that
+		// is shown on another one: it is meant for this desktop, in any mode.
+		return false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch etype {
@@ -388,7 +402,11 @@ func (c *macCapture) handle(etype uint32, ev uintptr) bool {
 			}
 			return true
 		}
-		if c.buttons == 0 && c.armed != 0 {
+		// A drag never leaves the screen - unless modifier keys are held with
+		// it: that may be a window on its way to another computer.
+		mods := macMods(cgEventGetFlags(ev))
+		drag := c.buttons == 1<<keys.ButtonLeft && mods != 0
+		if (c.buttons == 0 || drag) && c.armed != 0 {
 			if time.Since(c.deskAt) > 3*time.Second {
 				c.desk = layout.NewDesktop(Monitors())
 				c.deskAt = time.Now()
@@ -396,7 +414,7 @@ func (c *macCapture) handle(etype uint32, ev uintptr) bool {
 			p := cgEventGetLocation(ev)
 			x, y := int(math.Floor(p.X)), int(math.Floor(p.Y))
 			if side, ok := layout.FirstSide(c.desk.Edges(x, y) & c.armed); ok {
-				emit(c.events, Event{Kind: EvEdge, Side: side, Frac: c.desk.Frac(side, x, y)})
+				emit(c.events, Event{Kind: EvEdge, Side: side, Frac: c.desk.Frac(side, x, y), Mods: mods, Drag: drag})
 			}
 		}
 		return false
@@ -470,6 +488,24 @@ func (c *macCapture) handle(etype uint32, ev uintptr) bool {
 		return c.keyEvent(keys.FromMac(kc), down)
 	}
 	return c.remote
+}
+
+// macMods turns the modifier flags of an event into keys.Mod* bits.
+func macMods(flags uint64) uint8 {
+	var m uint8
+	if flags&flagControl != 0 {
+		m |= keys.ModCtrl
+	}
+	if flags&flagOption != 0 {
+		m |= keys.ModAlt
+	}
+	if flags&flagShift != 0 {
+		m |= keys.ModShift
+	}
+	if flags&flagCommand != 0 {
+		m |= keys.ModMeta
+	}
+	return m
 }
 
 func (c *macCapture) keyEvent(code uint16, down bool) bool {
@@ -582,6 +618,7 @@ func (c *macCapture) Close() {
 
 type macInjector struct {
 	mu      sync.Mutex
+	own     bool // mark the events, see Options.Own
 	src     uintptr
 	bounds  layout.Rect
 	x, y    float64 // last position, global display coordinates
@@ -607,7 +644,7 @@ func NewInjector(opts Options) (Injector, error) {
 	if cgRequestPostEventAccess != nil && !cgRequestPostEventAccess() {
 		logx.Warnf("%s\n(edgehop keeps running; input starts working once the permission is granted.)", macPermissionHelp)
 	}
-	m := &macInjector{modDown: map[uint16]bool{}}
+	m := &macInjector{modDown: map[uint16]bool{}, own: opts.Own}
 	m.src = cgEventSourceCreate(hidSystemState)
 	// By default macOS ignores the computer's own mouse and keyboard for a
 	// quarter of a second after every posted event. Turn that off, so this
@@ -642,8 +679,39 @@ func (m *macInjector) post(ev uintptr) {
 		return
 	}
 	cgEventSetFlags(ev, m.flags)
+	if m.own {
+		cgEventSetIntegerValueField(ev, fldUserData, ownMark)
+	}
 	cgEventPost(cgHIDEventTap, ev)
 	cfRelease(ev)
+}
+
+// EndDrag ends a drag the user is doing with the real mouse: what is being
+// dragged follows to x,y and is let go there. Away from the screen edge,
+// that is, where macOS would otherwise tile a window that is dropped.
+func (m *macInjector) EndDrag(x, y int) {
+	m.mu.Lock()
+	gx := float64(m.bounds.X + min(max(x, 0), max(m.bounds.W-1, 0)))
+	gy := float64(m.bounds.Y + min(max(y, 0), max(m.bounds.H-1, 0)))
+	var dx, dy float64
+	if now := cgEventCreate(0); now != 0 { // where the cursor is
+		p := cgEventGetLocation(now)
+		cfRelease(now)
+		dx, dy = gx-p.X, gy-p.Y
+	}
+	ev := cgEventCreateMouseEvent(m.src, evtLeftDragged, gx, gy, 0)
+	if ev != 0 {
+		cgEventSetIntegerValueField(ev, fldDeltaX, int64(math.Round(dx)))
+		cgEventSetIntegerValueField(ev, fldDeltaY, int64(math.Round(dy)))
+	}
+	m.x, m.y = gx, gy
+	m.post(ev)
+	m.mu.Unlock()
+	time.Sleep(30 * time.Millisecond) // let the dragged thing arrive there first
+	m.mu.Lock()
+	m.buttons &^= 1 << keys.ButtonLeft
+	m.post(cgEventCreateMouseEvent(m.src, evtLeftUp, gx, gy, 0))
+	m.mu.Unlock()
 }
 
 func (m *macInjector) MoveAbs(x, y int) {

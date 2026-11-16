@@ -260,6 +260,36 @@ func TestLiveMac(t *testing.T) {
 		t.Errorf("the cursor moved to %.0f,%.0f while remote (it was frozen at %.0f,%.0f)", cx, cy, parkX, parkY)
 	}
 
+	// An injector of the program's own, next to the capture (a server that
+	// lets its own windows be controlled from a client): what it injects is
+	// meant for this desktop. It must pass the tap although everything else
+	// is swallowed, move the real cursor although the mouse is frozen, and
+	// never be taken for the user's mouse and keyboard.
+	oi, err := NewInjector(Options{Own: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := oi.(*macInjector)
+	defer own.Close()
+	drain(c.Events())
+	own.MoveAbs(321, 222)
+	if !at(321, 222) {
+		cx, cy := cursor()
+		t.Errorf("while remote, the program's own mouse move left the cursor at %.0f,%.0f, want 321,222", cx, cy)
+	}
+	own.Key(keys.LeftShift, keys.Down)
+	own.Key(keys.LeftShift, keys.Up)
+	own.Wheel(0, 120)
+	own.MoveAbs(330, 230)
+	if got := drain(c.Events()); len(got) != 0 {
+		t.Errorf("while remote, the capture took the program's own input for the user's: %+v", got)
+	}
+	// The user's mouse still steers the other computer meanwhile.
+	parkX, parkY = cursor()
+	mouseDelta(7, -3)
+	waitCaptured(t, "remote motion next to own input", c.Events(), Event{Kind: EvMotion, DX: 7, DY: -3})
+	t.Log("capture: the program's own input passes while remote, and the mouse keeps steering")
+
 	// Back to local: the cursor appears where it re-enters, and input passes again.
 	c.Release(layout.Left, 0.5, true)
 	time.Sleep(200 * time.Millisecond)
@@ -276,4 +306,60 @@ func TestLiveMac(t *testing.T) {
 		t.Errorf("local mode reported events after returning: %+v", got)
 	}
 	t.Log("capture: returning to local mode works")
+
+	// --- the edge with modifier keys, and during a drag -------------------------
+	// The edge event says which modifier keys are held: that is how a window
+	// is sent to another computer.
+	edges := func() []Event {
+		var out []Event
+		for _, e := range drain(c.Events()) {
+			if e.Kind == EvEdge {
+				out = append(out, e)
+			} else {
+				t.Errorf("local mode reported %+v", e)
+			}
+		}
+		return out
+	}
+	const ctrlAlt = keys.ModCtrl | keys.ModAlt
+	inj.MoveAbs(w/2, h/2)
+	inj.Key(keys.LeftCtrl, keys.Down)
+	inj.Key(keys.LeftAlt, keys.Down)
+	inj.MoveAbs(w-1, h/2)
+	if got := edges(); len(got) == 0 || got[0].Mods != ctrlAlt || got[0].Drag {
+		t.Errorf("the edge with Ctrl+Option held: %+v", got)
+	}
+	inj.MoveAbs(w/2, h/2)
+	inj.Key(keys.LeftAlt, keys.Up)
+	inj.Key(keys.LeftCtrl, keys.Up)
+	edges()
+	// A drag never reports the edge - unless modifier keys are held with it.
+	inj.Button(keys.ButtonLeft, true)
+	inj.MoveAbs(w-1, h/2)
+	if got := edges(); len(got) != 0 {
+		t.Errorf("a plain drag reported the edge: %+v", got)
+	}
+	inj.MoveAbs(w/2, h/2)
+	inj.Key(keys.LeftCtrl, keys.Down)
+	inj.Key(keys.LeftAlt, keys.Down)
+	inj.MoveAbs(w-1, h/2)
+	if got := edges(); len(got) == 0 || got[0].Mods != ctrlAlt || !got[0].Drag {
+		t.Errorf("the edge during a drag with Ctrl+Option held: %+v", got)
+	}
+	inj.Key(keys.LeftAlt, keys.Up)
+	inj.Key(keys.LeftCtrl, keys.Up)
+	// The program lets go of what is dragged, away from the edge; the real
+	// button's release afterwards changes nothing.
+	own.EndDrag(w/2, h/3)
+	if !at(w/2, h/3) {
+		cx, cy := cursor()
+		t.Errorf("after ending the drag the cursor is at %.0f,%.0f, want %d,%d", cx, cy, w/2, h/3)
+	}
+	inj.Button(keys.ButtonLeft, false)
+	edges()
+	inj.MoveAbs(w-1, h/2)
+	if got := edges(); len(got) == 0 || got[0].Mods != 0 || got[0].Drag {
+		t.Errorf("the edge after the drag: %+v", got)
+	}
+	t.Log("capture: the edge reports modifier keys and drags")
 }

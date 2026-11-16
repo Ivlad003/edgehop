@@ -263,6 +263,25 @@ func (System) List() ([]Window, error) {
 	return out, nil
 }
 
+// Frontmost returns the window the user works in right now, if it is one
+// that can be shown remotely.
+func (s System) Frontmost() (Window, bool) {
+	hwnd := call(pGetForegroundWindow)
+	if hwnd == 0 {
+		return Window{}, false
+	}
+	if root := call(pGetAncestor, hwnd, gaRootOwner); root != 0 {
+		hwnd = root // a dialog stands for the window it belongs to
+	}
+	wins, _ := s.List()
+	for _, w := range wins {
+		if w.ID == uint64(hwnd) {
+			return w, w.W > 0 && w.H > 0
+		}
+	}
+	return Window{}, false
+}
+
 // guiThreadInfo is GUITHREADINFO.
 type guiThreadInfo struct {
 	size      uint32
