@@ -32,12 +32,9 @@ const (
 	TDataHello = 13 // client -> server, first frame of a data connection: session id
 	TClipState = 14 // client -> server, after the cursor left: did its clipboard change?
 	TClipSend  = 15 // server -> client: send your clipboard as bundle N on the data connection
-	TViewOpen  = 16 // server -> client: open view connection N (remote windows, experimental)
-	TViewHello = 17 // client -> server, first frame of a view connection: session id, N
-	TDragQuery = 18 // server -> client: is a window being dragged with the mouse right now? (question N)
-	TDragReply = 19 // client -> server: answer N - the window's id and size, id 0 for "none"
-	TViewAsk   = 20 // client -> server, first frame of a connection: session id - "show me your windows on this one"
-	TWindowGo  = 21 // server -> client: open this window of mine where the cursor comes in (id, size, edge, position)
+
+	// 16 - 21 belonged to remote windows, an experiment in versions 0.4 - 0.7.
+	// Those versions are still around, so the numbers stay unused.
 )
 
 // Capabilities, exchanged in Hello and Welcome. A side only uses a feature
@@ -45,10 +42,9 @@ const (
 const (
 	CapClipboard = 1 << 0 // shared clipboard over a separate data connection
 	CapDrop      = 1 << 1 // accepts files sent on purpose, over the data connection
-	CapView      = 1 << 2 // its windows can be shown and controlled from the server (experimental)
-	CapDrag      = 1 << 3 // can tell which of its windows is being dragged (TDragQuery)
-	CapSource    = 1 << 4 // server: its own windows can be shown on clients (TViewAsk)
-	CapShow      = 1 << 5 // client: shows windows of the server (TWindowGo)
+
+	// Bits 2 - 5 belonged to remote windows (versions 0.4 - 0.7) and stay
+	// unused: an older peer would take them for that feature.
 )
 
 // Msg is a decoded message. Only the fields of its Type are meaningful.
@@ -113,41 +109,6 @@ func AppendClipState(b []byte, changed bool) []byte {
 
 func AppendClipSend(b []byte, bundle uint32) []byte {
 	return be.AppendUint32(append(b, TClipSend), bundle)
-}
-
-func AppendViewOpen(b []byte, id uint32) []byte {
-	return be.AppendUint32(append(b, TViewOpen), id)
-}
-
-func AppendViewHello(b []byte, session, id uint32) []byte {
-	return be.AppendUint32(be.AppendUint32(append(b, TViewHello), session), id)
-}
-
-func AppendDragQuery(b []byte, id uint32) []byte {
-	return be.AppendUint32(append(b, TDragQuery), id)
-}
-
-func AppendDragReply(b []byte, id uint32, window uint64, w, h int) []byte {
-	b = be.AppendUint32(append(b, TDragReply), id)
-	b = be.AppendUint64(b, window)
-	return be.AppendUint32(be.AppendUint32(b, uint32(w)), uint32(h))
-}
-
-func AppendViewAsk(b []byte, session uint32) []byte {
-	return be.AppendUint32(append(b, TViewAsk), session)
-}
-
-// AppendWindowGo: side is the edge of the client's desktop the cursor comes
-// in through, frac how far along it (0..1).
-func AppendWindowGo(b []byte, window uint64, w, h int, side uint8, frac float64) []byte {
-	b = be.AppendUint64(append(b, TWindowGo), window)
-	b = be.AppendUint32(be.AppendUint32(b, uint32(w)), uint32(h))
-	if frac < 0 {
-		frac = 0
-	} else if frac > 1 {
-		frac = 1
-	}
-	return be.AppendUint16(append(b, side), uint16(frac*0xFFFF+0.5))
 }
 
 func AppendReject(b []byte, reason string) []byte {
@@ -279,23 +240,11 @@ func Decode(b []byte) (Msg, error) {
 		if r.err == nil && len(r.b) >= 4 {
 			m.Caps = r.u32()
 		}
-	case TDataHello, TViewAsk:
+	case TDataHello:
 		m.Session = r.u32()
-	case TWindowGo:
-		m.T = r.u64() // the window's id
-		m.W, m.H = r.u32(), r.u32()
-		m.Button = r.u8()       // the edge
-		m.Seq = uint32(r.u16()) // the position along it, 0..65535
 	case TClipState:
 		m.Changed = r.u8() != 0
-	case TClipSend, TViewOpen, TDragQuery:
-		m.Bundle = r.u32()
-	case TDragReply:
-		m.Bundle = r.u32()
-		m.T = r.u64() // the window's id
-		m.W, m.H = r.u32(), r.u32()
-	case TViewHello:
-		m.Session = r.u32()
+	case TClipSend:
 		m.Bundle = r.u32()
 	case TReject:
 		m.Reason = r.str()

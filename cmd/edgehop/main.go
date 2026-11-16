@@ -30,11 +30,9 @@ import (
 	"github.com/Ivlad003/edgehop/internal/keys"
 	"github.com/Ivlad003/edgehop/internal/layout"
 	"github.com/Ivlad003/edgehop/internal/logx"
-	"github.com/Ivlad003/edgehop/internal/rview"
 	"github.com/Ivlad003/edgehop/internal/secure"
 	"github.com/Ivlad003/edgehop/internal/server"
 	"github.com/Ivlad003/edgehop/internal/ui"
-	"github.com/Ivlad003/edgehop/internal/wincap"
 )
 
 // Set at build time with -ldflags "-X main.version=... -X main.repoURL=...".
@@ -322,8 +320,6 @@ type screenStatus struct {
 	H         int     `json:"h,omitempty"`
 	UDP       bool    `json:"udp,omitempty"`
 	Files     bool    `json:"files,omitempty"` // files can be sent to it
-	View      bool    `json:"view,omitempty"`  // its windows can be shown here
-	Shows     bool    `json:"shows,omitempty"` // it shows windows of this computer
 	RTTMs     float64 `json:"rttMs,omitempty"`
 }
 
@@ -338,24 +334,7 @@ type serverStatus struct {
 	Pending []server.UnknownClient `json:"pending"`
 	// Clipboard describes the last transfer (clipboard or files), if any.
 	Clipboard string `json:"clipboard,omitempty"`
-	// View is set while remote windows (experimental) are on.
-	View *viewStatus `json:"view,omitempty"`
-	// Give is set while the windows of this computer itself can be shown on
-	// the other computers.
-	Give *giveStatus `json:"give,omitempty"`
 	sendStatus
-}
-
-// viewStatus tells the settings page where the windows of the other
-// computers can be opened.
-type viewStatus struct {
-	URL string `json:"url"`
-}
-
-// giveStatus tells the settings page how a window of this computer is sent
-// to another one: the keys to hold, "" if that is switched off.
-type giveStatus struct {
-	Keys string `json:"keys"`
 }
 
 type clientStatus struct {
@@ -370,14 +349,6 @@ type clientStatus struct {
 	// be sent to it.
 	ServerName string `json:"serverName,omitempty"`
 	Files      bool   `json:"files,omitempty"`
-	// View: the server may show and control this computer's windows.
-	// ViewServer: and the server is ready to do so.
-	View       bool `json:"view,omitempty"`
-	ViewServer bool `json:"viewServer,omitempty"`
-	// Show: this computer shows windows of the server, opened at that link.
-	// ShowServer: and the server lets its windows be shown.
-	Show       *viewStatus `json:"show,omitempty"`
-	ShowServer bool        `json:"showServer,omitempty"`
 	sendStatus
 }
 
@@ -447,126 +418,6 @@ func (s *sender) run(ctx context.Context, cmds <-chan childCommand, send func(to
 	}
 }
 
-// arrivedWindow is a window of another computer that came over with the
-// cursor: whose it is, which one, its size there, and where on this desktop
-// (sw x sh pixels) the cursor came in.
-type arrivedWindow struct {
-	Peer   string
-	ID     uint64
-	W, H   int
-	Side   layout.Side
-	Frac   float64
-	sw, sh int
-}
-
-// openArrivedWindow shows a window that came over from another computer: in
-// a browser window of its own with its top edge under the cursor, where a
-// browser can do that, and as an ordinary page otherwise.
-func openArrivedWindow(viewer *rview.Viewer, d arrivedWindow) {
-	link := viewer.WindowURL(d.Peer, d.ID)
-	sw, sh := d.sw, d.sh
-	cx, cy := layout.EntryPoint(sw, sh, d.Side, d.Frac, 0)
-	w, h := d.W, d.H+40 // room for the title bar
-	if w < 320 {
-		w = 320
-	}
-	if h < 240 {
-		h = 240
-	}
-	if w > sw {
-		w = sw
-	}
-	if h > sh {
-		h = sh
-	}
-	x, y := cx-w/2, cy-16
-	if x > sw-w {
-		x = sw - w
-	}
-	if x < 0 {
-		x = 0
-	}
-	if y > sh-h {
-		y = sh - h
-	}
-	if y < 0 {
-		y = 0
-	}
-	// The browser counts from the main display, the capture from the
-	// top-left corner of the whole desktop.
-	ox, oy := 0, 0
-	for i, m := range input.Monitors() {
-		if i == 0 || m.X < ox {
-			ox = m.X
-		}
-		if i == 0 || m.Y < oy {
-			oy = m.Y
-		}
-	}
-	err := rview.OpenAppWindow(link, ox+x, oy+y, w, h)
-	if err != nil {
-		err = ui.OpenBrowser(link)
-	}
-	if err != nil {
-		logx.Warnf("remote windows: cannot open the window that came over from %s: %v", d.Peer, err)
-	}
-}
-
-// dragBack is how far from the screen edge a window is let go when it is
-// sent to another computer in the middle of a drag: far enough for the
-// system not to snap or tile it to that edge.
-const dragBack = 160
-
-// ownWindows prepares showing the windows of the server itself on its
-// clients: the source of the pictures and, for a window sent over in the
-// middle of a drag, the way to let go of it. The source is nil when that is
-// not possible here.
-func ownWindows(cfg *config.Config, opts input.Options, noInput bool, capture input.Capture) (*rview.Source, func(layout.Side, float64), func()) {
-	if err := wincap.Supported(); err != nil {
-		return nil, nil, nil
-	}
-	if noInput {
-		return &rview.Source{Windows: wincap.System{}, Injector: &input.NullInjector{}, Name: cfg.Name, OS: runtime.GOOS}, nil, nil
-	}
-	if !input.OwnInjection() {
-		logx.Infof("remote windows: the windows of this computer itself cannot be shown on the others yet - that works when the computer with the mouse is a Mac")
-		return nil, nil, nil
-	}
-	opts.Own = true
-	inj, err := input.NewInjector(opts)
-	if err != nil {
-		logx.Warnf("remote windows: the windows of this computer cannot be shown on the others: %v", err)
-		return nil, nil, nil
-	}
-	go func() { // asks for the permission to record the screen now, not in the middle of a gesture
-		if _, err := (wincap.System{}).List(); err != nil {
-			logx.Warnf("remote windows: %v", err)
-		}
-	}()
-	endDrag := func(side layout.Side, frac float64) {
-		if de, ok := inj.(input.DragEnder); ok {
-			sw, sh := capture.Size()
-			x, y := layout.EntryPoint(sw, sh, side, frac, dragBack)
-			de.EndDrag(x, y)
-		}
-	}
-	return &rview.Source{Windows: wincap.System{}, Injector: inj, Name: cfg.Name, OS: runtime.GOOS}, endDrag, inj.Close
-}
-
-// windowToSend names the window that goes along when the user takes the
-// cursor to another computer with the keys for that held: the one being
-// dragged where the system can tell, otherwise the one in front.
-func windowToSend() (uint64, int, int) {
-	sys := wincap.System{}
-	if w, ok := sys.Dragged(); ok {
-		return w.ID, w.W, w.H
-	}
-	if w, ok := sys.Frontmost(); ok {
-		return w.ID, w.W, w.H
-	}
-	return 0, 0, 0
-}
-
 // screenOrder lists the layout's screens: the row first, then the rest.
 func screenOrder(cfg *config.Config, lay *layout.Layout) []string {
 	seen := map[string]bool{}
@@ -607,73 +458,14 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	defer capture.Close()
 
 	cb, clipDir := openClipboard(cfg, noInput)
-	var viewer *rview.Viewer // remote windows; set below when they are on
-	// The windows of this computer itself, for the others.
-	var own *rview.Source
-	var endDrag func(layout.Side, float64)
-	var give *giveStatus
-	windowKeys, err := cfg.WindowMods()
-	if err != nil {
-		return err
-	}
-	if cfg.RemoteWindows {
-		var closeOwn func()
-		if own, endDrag, closeOwn = ownWindows(cfg, opts, noInput, capture); closeOwn != nil {
-			defer closeOwn()
-		}
-		if own != nil {
-			give = &giveStatus{Keys: keys.ModsText(windowKeys, runtime.GOOS)}
-			if windowKeys != 0 {
-				logx.Infof("remote windows: hold %s and take the cursor over the edge to send the window you work in to that computer", give.Keys)
-			}
-		}
-	}
 	srv := server.New(server.Config{
 		Name: cfg.Name, Listen: cfg.Listen, Key: cfg.Key,
 		Layout: lay, Screens: screens, Hotkey: hotkey, AutoScale: true,
 		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
-		DropDir: cfg.DownloadDir(), ShowsWindows: cfg.RemoteWindows,
-		OnWindowDrag: func(d server.DraggedWindow) {
-			if viewer != nil {
-				sw, sh := capture.Size()
-				openArrivedWindow(viewer, arrivedWindow{Peer: d.Peer, ID: d.ID, W: d.W, H: d.H, Side: d.Side, Frac: d.Frac, sw: sw, sh: sh})
-			}
-		},
-		View: own, WindowKeys: windowKeys, PickWindow: windowToSend, EndDrag: endDrag,
+		DropDir: cfg.DownloadDir(),
 	}, capture)
 	files := &sender{downloads: cfg.DownloadDir()}
 	go files.run(ctx, cmds, srv.SendFiles)
-	var view *viewStatus
-	if cfg.RemoteWindows {
-		v := &rview.Viewer{
-			Peers: func() []rview.Peer {
-				var out []rview.Peer
-				for _, p := range srv.ViewPeers() {
-					out = append(out, rview.Peer{Name: p.Name, OS: p.OS})
-				}
-				return out
-			},
-			Open: func(peer string) (rview.Conn, error) {
-				ch, err := srv.OpenView(peer)
-				if err != nil {
-					return nil, err
-				}
-				return ch, nil
-			},
-			Remap: srv.ViewRemap,
-		}
-		if err := v.Listen(); err != nil {
-			logx.Warnf("remote windows are not available: %v", err)
-		} else {
-			viewer = v // before the server starts serving: the drag hook reads it
-			go viewer.Serve(ctx)
-			view = &viewStatus{URL: viewer.URL()}
-			logx.Infof("remote windows (experimental) are on: the settings page opens the windows of the other computers")
-			if !child {
-				logx.Infof("remote windows: %s", viewer.URL())
-			}
-		}
-	}
 	logx.Infof("files sent to this computer are saved in %s", cfg.DownloadDir())
 	if err := srv.Listen(); err != nil {
 		return err
@@ -693,7 +485,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	}
 	if child {
 		go reportStatus(ctx, func() any {
-			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus(), Pending: srv.Unknown(), Clipboard: srv.ClipboardStatus(), View: view, Give: give, sendStatus: files.status()}
+			st := serverStatus{Role: "server", Name: cfg.Name, Port: srv.Addr().Port, Focus: srv.Focus(), Pending: srv.Unknown(), Clipboard: srv.ClipboardStatus(), sendStatus: files.status()}
 			if hotkey.Key != 0 {
 				st.Hotkey = hotkeyText(cfg)
 			}
@@ -705,7 +497,7 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 				s := screenStatus{Name: n, Self: n == cfg.Name}
 				if c, ok := clients[n]; ok {
 					s.Connected, s.OS, s.W, s.H, s.UDP, s.RTTMs = true, c.OS, c.W, c.H, c.UDP, c.RTTMs
-					s.Files, s.View, s.Shows = c.Files, c.View, c.Shows
+					s.Files = c.Files
 				}
 				st.Screens = append(st.Screens, s)
 			}
@@ -740,70 +532,12 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	defer inj.Close()
 	w, h := inj.Size()
 	logx.Infof("client %q, desktop %dx%d, server %s", cfg.Name, w, h, cfg.Server)
-	if n := wincap.RestoreHidden(); n > 0 {
-		logx.Infof("remote windows: showed %d window(s) again that were left hidden when edgehop last stopped", n)
-	}
 	logx.Infof("input: %s", inj.Describe())
 	cb, clipDir := openClipboard(cfg, noInput)
-	var view *rview.Source
-	if cfg.RemoteWindows {
-		if err := wincap.Supported(); err != nil {
-			logx.Warnf("remote windows: %v", err)
-		} else {
-			view = &rview.Source{Windows: wincap.System{}, Injector: inj, Name: cfg.Name, OS: runtime.GOOS}
-			logx.Infof("remote windows (experimental) are on: the server may show and control this computer's windows")
-		}
-	}
-	// The other direction: windows of the server, shown here.
-	var c *client.Client
-	var viewer *rview.Viewer
-	var show *viewStatus
-	if cfg.RemoteWindows {
-		v := &rview.Viewer{
-			Peers: func() []rview.Peer {
-				if c == nil || !c.ServerGivesWindows() {
-					return nil
-				}
-				return []rview.Peer{{Name: c.ServerName()}}
-			},
-			Open: func(peer string) (rview.Conn, error) {
-				if c == nil || peer == "" || peer != c.ServerName() {
-					return nil, fmt.Errorf("%q is not the computer this one is connected to", peer)
-				}
-				ch, err := c.OpenView()
-				if err != nil {
-					return nil, err
-				}
-				return ch, nil
-			},
-		}
-		if err := v.Listen(); err != nil {
-			logx.Warnf("remote windows: the windows of the server cannot be shown here: %v", err)
-		} else {
-			viewer = v
-			go viewer.Serve(ctx)
-			show = &viewStatus{URL: viewer.URL()}
-			if !child {
-				logx.Infof("remote windows: %s", viewer.URL())
-			}
-		}
-	}
-	c = client.New(client.Config{
+	c := client.New(client.Config{
 		Name: cfg.Name, Server: cfg.Server, Key: cfg.Key,
 		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
-		DropDir: cfg.DownloadDir(), View: view,
-		Dragged: func() (uint64, int, int) {
-			if w, ok := (wincap.System{}).Dragged(); ok {
-				return w.ID, w.W, w.H
-			}
-			return 0, 0, 0
-		},
-		Shows: viewer != nil,
-		OnWindow: func(d client.SentWindow) {
-			sw, sh := inj.Size()
-			logx.Infof("window sent over from %s", d.Peer)
-			openArrivedWindow(viewer, arrivedWindow{Peer: d.Peer, ID: d.ID, W: d.W, H: d.H, Side: d.Side, Frac: d.Frac, sw: sw, sh: sh})
-		},
+		DropDir: cfg.DownloadDir(),
 	}, inj)
 	files := &sender{downloads: cfg.DownloadDir()}
 	go files.run(ctx, cmds, func(_ string, paths []string) error { return c.SendFiles(paths) })
@@ -812,8 +546,7 @@ func runClient(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 		go reportStatus(ctx, func() any {
 			return clientStatus{Role: "client", Name: cfg.Name, Server: cfg.Server,
 				Connected: c.Connected(), Active: c.Active(), Error: c.LastError(), Clipboard: c.ClipboardStatus(),
-				ServerName: c.ServerName(), Files: c.CanSendFiles(), View: view != nil, ViewServer: c.ServerShowsWindows(),
-				Show: show, ShowServer: c.ServerGivesWindows(), sendStatus: files.status()}
+				ServerName: c.ServerName(), Files: c.CanSendFiles(), sendStatus: files.status()}
 		})
 	}
 	return c.Run(ctx)

@@ -101,7 +101,6 @@ func TestValidationErrors(t *testing.T) {
 		"unknown setting":  `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" + `colour = "red"`,
 		"bad hotkey":       `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" + `release_hotkey = "ctrl+banana"`,
 		"bad size":         `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" + `screen_size = "big"`,
-		"bad window keys":  `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" + `window_keys = "ctrl+w"`,
 		"bad link side":    `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" + "[[links]]\nfrom = \"a\"\nside = \"sideways\"\nto = \"b\"",
 		"orphan screen":    `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" + "[screens.ghost]\nscale = 2.0",
 		"bad remap":        `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" + `row = ["a", "b"]` + "\n" + "[screens.b]\nremap = { alt = \"nothing\" }",
@@ -110,6 +109,27 @@ func TestValidationErrors(t *testing.T) {
 		if _, err := Parse(text); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
+	}
+}
+
+// A config file written for a version that still had remote windows keeps
+// loading: the settings of that feature are ignored, not reported as unknown.
+func TestObsoleteSettingsAreIgnored(t *testing.T) {
+	text := `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" +
+		`remote_windows = true` + "\n" + `window_keys = "ctrl+shift"` + "\n"
+	c, err := Parse(text)
+	if err != nil {
+		t.Fatalf("a config of an older version is refused: %v", err)
+	}
+	if c.Name != "a" || c.Role != "server" {
+		t.Fatalf("parsed as %+v", c)
+	}
+	out, err := c.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "remote_windows") || strings.Contains(out, "window_keys") {
+		t.Fatalf("an obsolete setting is written back:\n%s", out)
 	}
 }
 
@@ -329,25 +349,5 @@ to = "far"
 	got.Apply(f)
 	if len(got.Links) != 1 || got.Links[0].To != "far" {
 		t.Errorf("links after clearing = %+v", got.Links)
-	}
-}
-
-func TestWindowKeys(t *testing.T) {
-	base := `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n"
-	for text, want := range map[string]uint8{
-		"":                            keys.ModCtrl | keys.ModAlt, // the default
-		`window_keys = "cmd+shift"`:   keys.ModMeta | keys.ModShift,
-		`window_keys = "Ctrl+Option"`: keys.ModCtrl | keys.ModAlt,
-		`window_keys = "none"`:        0,
-		`window_keys = ""`:            0,
-	} {
-		c, err := Parse(base + text)
-		if err != nil {
-			t.Errorf("%q: %v", text, err)
-			continue
-		}
-		if got, err := c.WindowMods(); err != nil || got != want {
-			t.Errorf("%q: keys %d, %v; want %d", text, got, err, want)
-		}
 	}
 }

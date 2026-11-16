@@ -25,7 +25,7 @@ jobs:
         run: go test -count=1 ./...
       - name: Test again with the race detector, several times
         if: runner.os == 'Linux'
-        run: go test -race -count=5 ./internal/server/ ./internal/client/ ./internal/xfer/ ./internal/secure/ ./internal/ui/ ./internal/rview/
+        run: go test -race -count=5 ./internal/server/ ./internal/client/ ./internal/xfer/ ./internal/secure/ ./internal/ui/
       - name: Build
         run: go build ./cmd/edgehop
       - name: Start the program once (lists the screens of this machine)

@@ -55,16 +55,6 @@ type Config struct {
 	// Default: "edgehop" inside the Downloads folder.
 	Downloads string `toml:"downloads,omitempty"`
 
-	// Both, experimental: remote windows. On a client: the server may show
-	// this computer's windows and control them. On the server: offer the
-	// windows of the clients that allow it. Off unless set.
-	RemoteWindows bool `toml:"remote_windows,omitempty"`
-
-	// Server only, with remote windows: the modifier keys that send a window
-	// of this computer to another one when they are held while the cursor is
-	// taken over the edge. Default DefaultWindowKeys; "none" switches it off.
-	WindowKeys *string `toml:"window_keys"`
-
 	// Both: override the detected desktop size, "1920x1080".
 	ScreenSize string `toml:"screen_size,omitempty"`
 
@@ -150,13 +140,23 @@ func Parse(text string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if un := md.Undecoded(); len(un) > 0 {
-		return nil, fmt.Errorf("unknown setting %q", un[0].String())
+	for _, un := range md.Undecoded() {
+		if !obsolete[un.String()] {
+			return nil, fmt.Errorf("unknown setting %q", un.String())
+		}
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// obsolete lists the settings of features that are gone. Files written for
+// older versions still carry them and must keep loading; the next save from
+// the settings page drops them.
+var obsolete = map[string]bool{
+	"remote_windows": true, // remote windows, an experiment in 0.4 - 0.7
+	"window_keys":    true,
 }
 
 func (c *Config) validate() error {
@@ -183,9 +183,6 @@ func (c *Config) validate() error {
 			return err
 		}
 		if _, err := c.Hotkey(); err != nil {
-			return err
-		}
-		if _, err := c.WindowMods(); err != nil {
 			return err
 		}
 		for name, s := range c.Screens {
@@ -266,24 +263,6 @@ func (c *Config) Hotkey() (keys.Hotkey, error) {
 		s = *c.ReleaseHotkey
 	}
 	return keys.ParseHotkey(s)
-}
-
-// DefaultWindowKeys are held while the cursor is taken over an edge to send
-// a window along (remote windows).
-const DefaultWindowKeys = "ctrl+alt"
-
-// WindowMods returns the modifier keys that send a window of this computer
-// to another one, as a mask of keys.Mod*; 0 means that is switched off.
-func (c *Config) WindowMods() (uint8, error) {
-	s := DefaultWindowKeys
-	if c.WindowKeys != nil {
-		s = *c.WindowKeys
-	}
-	mods, err := keys.ParseMods(s)
-	if err != nil {
-		return 0, fmt.Errorf("`window_keys`: %w", err)
-	}
-	return mods, nil
 }
 
 // ClipboardEnabled reports whether the clipboard is shared (default true).
@@ -439,7 +418,6 @@ type Form struct {
 	ScreenSize     string                `json:"screenSize"`
 	Clipboard      bool                  `json:"clipboard"`
 	ClipboardMaxMB int                   `json:"clipboardMaxMB"`
-	RemoteWindows  bool                  `json:"remoteWindows"`
 	Screens        map[string]FormScreen `json:"screens"`
 }
 
@@ -475,7 +453,6 @@ func (c *Config) Form() Form {
 		ScreenSize:     c.ScreenSize,
 		Clipboard:      c.ClipboardEnabled(),
 		ClipboardMaxMB: int(c.ClipboardLimit() >> 20),
-		RemoteWindows:  c.RemoteWindows,
 		Screens:        map[string]FormScreen{},
 	}
 	if c.ReleaseHotkey != nil {
@@ -505,7 +482,6 @@ func (c *Config) Apply(f Form) {
 	share := f.Clipboard
 	c.Clipboard = &share
 	c.ClipboardMaxMB = f.ClipboardMaxMB
-	c.RemoteWindows = f.RemoteWindows
 	if c.ClipboardMaxMB == DefaultClipboardMaxMB || c.ClipboardMaxMB < 0 {
 		c.ClipboardMaxMB = 0 // the default; leave it out of the file
 	}

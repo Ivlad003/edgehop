@@ -38,12 +38,6 @@ type Event struct {
 	WX, WY int32       // EvWheel
 	Code   uint16      // EvButton: keys.Button*, EvKey: key code
 	State  uint8       // EvButton: 0/1, EvKey: keys.Up/Down/Repeat
-	// EvEdge: the modifier keys held at that moment (keys.Mod*). Drag: the left mouse
-	// button is held too - the user is dragging something. An edge is only
-	// reported during a drag while modifier keys are held; a plain drag never
-	// leaves the screen.
-	Mods uint8
-	Drag bool
 }
 
 // Capture watches the physical mouse and keyboard of the server.
@@ -86,21 +80,8 @@ type Injector interface {
 	Close()
 }
 
-// DragEnder is implemented by injectors that can end a drag the user is doing
-// with the real mouse: the dragged thing is taken to x,y (desktop pixels, as
-// for MoveAbs) and let go there. The real button may stay held; its release
-// then means nothing any more.
-type DragEnder interface {
-	EndDrag(x, y int)
-}
-
 // Options configure the platform backends.
 type Options struct {
-	// Own is for an injector that runs next to a Capture in the same program
-	// (a server that lets its own windows be controlled from a client): what
-	// it injects is marked, and the capture lets it through untouched instead
-	// of taking it for the user's mouse and keyboard.
-	Own bool
 	// HideCursor hides the server's cursor while it controls another screen.
 	HideCursor bool
 	// Width, Height override the detected desktop size when non-zero.
@@ -110,10 +91,6 @@ type Options struct {
 	PointerSpeed float64
 	PointerAccel float64
 }
-
-// ownMark is what an injector created with Options.Own writes into its
-// events ("ehop"), and what the capture looks for.
-const ownMark = 0x65686F70
 
 // keyTracker decides what happens to each physical key event on the server.
 //

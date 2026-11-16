@@ -130,33 +130,3 @@ func TestHotkey(t *testing.T) {
 		t.Errorf("unknown key must be rejected")
 	}
 }
-
-func TestMods(t *testing.T) {
-	for text, want := range map[string]uint8{
-		"ctrl+alt":          ModCtrl | ModAlt,
-		" Control + Option": ModCtrl | ModAlt,
-		"cmd+shift":         ModMeta | ModShift,
-		"win":               ModMeta,
-		"":                  0,
-		"none":              0,
-	} {
-		got, err := ParseMods(text)
-		if err != nil || got != want {
-			t.Errorf("ParseMods(%q) = %d, %v; want %d", text, got, err, want)
-		}
-	}
-	for _, text := range []string{"ctrl+a", "ctrl+", "banana"} {
-		if _, err := ParseMods(text); err == nil {
-			t.Errorf("ParseMods(%q) must fail", text)
-		}
-	}
-	if got := ModsText(ModCtrl|ModAlt, "darwin"); got != "Ctrl+Option" {
-		t.Errorf("on a Mac: %q", got)
-	}
-	if got := ModsText(ModCtrl|ModAlt|ModShift|ModMeta, "windows"); got != "Ctrl+Alt+Shift+Win" {
-		t.Errorf("on Windows: %q", got)
-	}
-	if got := ModsText(0, "linux"); got != "" {
-		t.Errorf("no keys: %q", got)
-	}
-}

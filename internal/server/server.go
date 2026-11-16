@@ -24,7 +24,6 @@ import (
 	"github.com/Ivlad003/edgehop/internal/layout"
 	"github.com/Ivlad003/edgehop/internal/logx"
 	"github.com/Ivlad003/edgehop/internal/proto"
-	"github.com/Ivlad003/edgehop/internal/rview"
 	"github.com/Ivlad003/edgehop/internal/secure"
 )
 
@@ -74,34 +73,6 @@ type Config struct {
 	// DropDir is where files that another computer sends to this one are
 	// saved. Empty means this computer does not accept sent files.
 	DropDir string
-
-	// ShowsWindows tells the clients that this server shows the windows of
-	// clients that allow it (remote windows, experimental), so their
-	// settings pages can say whether this side is ready.
-	ShowsWindows bool
-
-	// OnWindowDrag, when set, is called when the user pushed a window of a
-	// client against the edge towards this computer and the cursor came
-	// over with it (see drag.go). DragHold and DragPush tune the gesture;
-	// zero means the defaults.
-	OnWindowDrag func(DraggedWindow)
-	DragHold     time.Duration
-	DragPush     float64
-
-	// View, when set, lets clients show the windows of this computer itself
-	// and control them (remote windows, the other direction; see give.go).
-	View *rview.Source
-
-	// WindowKeys, PickWindow and EndDrag send a window of this computer to a
-	// client: with exactly the modifier keys WindowKeys held (a mask of
-	// keys.Mod*), taking the cursor over an edge opens the window PickWindow
-	// names on the client behind that edge. PickWindow returns id 0 when
-	// there is no window to send. If the user was dragging the window with
-	// the mouse, EndDrag is called first to let go of it; side and frac say
-	// where on this desktop the cursor is.
-	WindowKeys uint8
-	PickWindow func() (id uint64, w, h int)
-	EndDrag    func(side layout.Side, frac float64)
 }
 
 // autoScale returns how much faster the cursor should move on a client whose
@@ -136,9 +107,6 @@ type session struct {
 	data   atomic.Pointer[secure.Channel] // the data connection, once the client opened it
 	dataMu sync.Mutex                     // one bundle at a time towards this client
 
-	givenMu sync.Mutex
-	given   map[*secure.Channel]struct{} // views of this computer's windows the client has open
-
 	// Scratch buffers, used only by the run loop.
 	buf []byte
 	dg  []byte
@@ -165,7 +133,6 @@ func (s *session) send(b []byte) {
 type ctlMsg struct {
 	connect bool
 	sess    *session
-	drag    *dragReply // set: not a connect or disconnect, but an answer about a dragged window
 }
 
 // Server is the input router.
@@ -180,11 +147,6 @@ type Server struct {
 
 	idMu sync.RWMutex
 	byID map[uint32]*session
-
-	views   viewHub   // remote windows (experimental)
-	drag    dragState // run loop only: a window pushed against the edge
-	dragSeq uint32
-	give    giveState // this computer's own windows, shown on clients
 
 	warnMu sync.Mutex
 	warned map[string]time.Time
@@ -296,8 +258,6 @@ type ClientInfo struct {
 	Addr  string  `json:"addr"`
 	UDP   bool    `json:"udp"`   // cursor motion travels over UDP
 	Files bool    `json:"files"` // files can be sent to it
-	View  bool    `json:"view"`  // its windows can be shown here
-	Shows bool    `json:"shows"` // it shows windows of this computer
 	RTTMs float64 `json:"rttMs"` // last measured round trip, milliseconds
 }
 
@@ -344,8 +304,6 @@ func (s *Server) Clients() []ClientInfo {
 			Name: sess.name, OS: sess.os, W: sess.w, H: sess.h, Addr: host,
 			UDP:   sess.udp.Load() != nil,
 			Files: sess.caps&proto.CapDrop != 0 && sess.data.Load() != nil,
-			View:  sess.caps&proto.CapView != 0,
-			Shows: sess.caps&proto.CapShow != 0,
 			RTTMs: math.Round(float64(sess.rtt.Load())/1e4) / 100,
 		})
 	}
@@ -495,16 +453,6 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.handleData(ch, hello.Session)
 		return
 	}
-	if err == nil && hello.Type == proto.TViewHello {
-		conn.SetReadDeadline(time.Time{})
-		s.handleView(ch, hello.Session, hello.Bundle)
-		return
-	}
-	if err == nil && hello.Type == proto.TViewAsk {
-		conn.SetReadDeadline(time.Time{})
-		s.serveView(ch, hello.Session)
-		return
-	}
 	if err != nil || hello.Type != proto.THello {
 		conn.Close()
 		return
@@ -561,7 +509,6 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.idMu.Unlock()
 	defer func() {
 		sess.close()
-		sess.closeGiven()
 		if d := sess.data.Load(); d != nil {
 			d.Close()
 		}
@@ -580,12 +527,6 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	if s.cfg.DropDir != "" {
 		caps |= proto.CapDrop
-	}
-	if s.cfg.ShowsWindows {
-		caps |= proto.CapView
-	}
-	if s.cfg.View != nil {
-		caps |= proto.CapSource
 	}
 	if err := ch.Send(proto.AppendWelcome(nil, sess.id, s.cfg.Name, caps)); err != nil {
 		return
@@ -618,13 +559,6 @@ func (s *Server) handleConn(conn net.Conn) {
 		case proto.TClipState:
 			if s.clip != nil {
 				s.clip.clientState(sess, m.Changed)
-			}
-		case proto.TDragReply:
-			reply := &dragReply{id: m.Bundle, window: m.T, w: int(m.W), h: int(m.H)}
-			select {
-			case s.ctl <- ctlMsg{sess: sess, drag: reply}:
-			case <-s.done:
-				return
 			}
 		}
 	}
@@ -697,10 +631,6 @@ func (s *Server) setFocus(sess *session) {
 
 func (s *Server) handleCtl(m ctlMsg) {
 	sess := m.sess
-	if m.drag != nil {
-		s.dragAnswered(sess, *m.drag)
-		return
-	}
 	if m.connect {
 		if old := s.byName[sess.name]; old != nil {
 			logx.Infof("%s reconnected; dropping its old connection", sess.name)
@@ -799,9 +729,7 @@ func (s *Server) handleEvents(ev input.Event, events <-chan input.Event) {
 func (s *Server) handle(ev input.Event) {
 	switch ev.Kind {
 	case input.EvEdge:
-		// With the keys for sending a window held, the window goes along. A
-		// drag alone never leaves the screen.
-		if s.focus == nil && !s.sendWindow(ev) && !ev.Drag {
+		if s.focus == nil {
 			s.leaveLocal(ev.Side, ev.Frac)
 		}
 	case input.EvButton:
@@ -918,13 +846,7 @@ func (s *Server) motion(dx, dy float64) {
 	ny := s.cy + dy*sess.scale
 	maxX, maxY := float64(sess.w-1), float64(sess.h-1)
 
-	// Never switch screens in the middle of a drag - unless it is a window
-	// being pushed over to this computer, which dragPushed watches for.
-	if s.buttons != 0 {
-		s.dragPushed(sess, nx, ny, maxX, maxY)
-	} else {
-		s.drag = dragState{}
-	}
+	// Never switch screens in the middle of a drag.
 	if s.buttons == 0 {
 		if nx < 0 && s.cross(sess, layout.Left, nx, ny) {
 			return

@@ -190,8 +190,7 @@ input[type="number"] { max-width: 140px; }
 .inline input { flex: 1 1 220px; }
 .field .hint { margin-top: 4px; }
 .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; cursor: pointer; }
-.check input { width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
-.check-hint { margin: 4px 0 0 24px; }
+.check input { width: 16px; height: 16px; accent-color: var(--accent); }
 
 .row-editor { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .chip {
@@ -271,7 +270,6 @@ code.cmd { display: block; flex: 1 1 320px; padding: 8px 10px; }
   font-size: 14px;
 }
 .note:empty { display: none; }
-.steps-note { white-space: pre-line; background: var(--warn-soft); }
 
 .row-cap { align-self: center; color: var(--muted); font-size: 13px; white-space: nowrap; }
 

@@ -8,10 +8,6 @@
 #            tap); clipboard through NSPasteboard
 #   Windows  clipboard through the Win32 API (input is checked on a real
 #            desktop with `edgehop selftest --grab`)
-#
-# and the experimental remote windows: listing windows, taking their
-# picture, and a click and a key press placed through the picture
-# (Windows and macOS).
 name: live-input
 
 on:
@@ -21,7 +17,6 @@ on:
       - 'internal/keys/**'
       - 'internal/layout/**'
       - 'internal/clip/**'
-      - 'internal/wincap/**'
       - '.github/workflows/live-input.yml'
   workflow_dispatch:
 
@@ -71,14 +66,6 @@ jobs:
         run: |
           EDGEHOP_LIVE=1 go test ./internal/clip/ -run Live -v -timeout 120s 2>&1 | tee clip.log
           if grep -q -- '--- SKIP' clip.log; then echo "::error::the clipboard test was skipped"; exit 1; fi
-      - name: Remote windows - the window list and pictures of windows
-        shell: bash
-        run: |
-          open . && sleep 4   # a Finder window to take a picture of
-          EDGEHOP_LIVE=1 go test ./internal/wincap/ -run Live -v -timeout 120s 2>&1 | tee wincap.log
-          # Without the Screen Recording permission the test can only skip;
-          # say so loudly instead of pretending it was verified.
-          if grep -q -- '--- SKIP' wincap.log; then echo "::warning::remote windows were NOT verified on macOS (see the log)"; fi
 
   windows:
     runs-on: windows-latest
@@ -92,8 +79,3 @@ jobs:
         run: |
           EDGEHOP_LIVE=1 go test ./internal/clip/ -run Live -v -timeout 120s 2>&1 | tee clip.log
           if grep -q -- '--- SKIP' clip.log; then echo "::error::the clipboard test was skipped"; exit 1; fi
-      - name: Remote windows - list, picture, click and key through the picture
-        shell: bash
-        run: |
-          EDGEHOP_LIVE=1 go test ./internal/wincap/ -v -timeout 120s 2>&1 | tee wincap.log
-          if grep -q -- '--- SKIP' wincap.log; then echo "::error::a remote windows test was skipped"; exit 1; fi
