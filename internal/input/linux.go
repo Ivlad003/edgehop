@@ -448,6 +448,7 @@ type evDevice struct {
 	name  string
 	fd    int
 	hires bool // reports high resolution wheel events
+	keys  bool // has the keys of a keyboard
 }
 
 type linuxCapture struct {
@@ -469,6 +470,7 @@ type linuxCapture struct {
 	buttons      uint32
 	localButtons uint32
 	kt           keyTracker
+	keyb         keyboard
 	remX, remY   int
 }
 
@@ -576,7 +578,7 @@ func openDevice(path string) (*evDevice, error) {
 		syscall.Close(fd)
 		return nil, fmt.Errorf("cannot grab %s (%s): %w", path, name, err)
 	}
-	return &evDevice{path: path, name: name, fd: fd, hires: hasBit(relBits, relWheelHiRes)}, nil
+	return &evDevice{path: path, name: name, fd: fd, hires: hasBit(relBits, relWheelHiRes), keys: isKeyboard}, nil
 }
 
 // scan picks up devices that are not grabbed yet (also used for hot-plug:
@@ -678,6 +680,11 @@ func (c *linuxCapture) read(d *evDevice) {
 	if c.devs[d.path] == d {
 		delete(c.devs, d.path)
 	}
+	if d.keys {
+		// A keyboard that is unplugged never reports the release of what
+		// was held on it.
+		c.keyb.reset()
+	}
 	c.mu.Unlock()
 	syscall.Close(d.fd)
 }
@@ -705,7 +712,7 @@ func (c *linuxCapture) motion(dx, dy int32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.remote {
-		emit(c.events, Event{Kind: EvMotion, DX: fx, DY: fy})
+		emit(c.events, Event{Kind: EvMotion, DX: fx, DY: fy, Mods: c.keyb.mods()})
 		return
 	}
 	nx, ny := c.x+fx, c.y+fy
@@ -726,14 +733,20 @@ func (c *linuxCapture) motion(dx, dy int32) {
 		}
 		if side, ok := layout.FirstSide(mask & c.armed); ok {
 			frac := 0.5
+			pos, span := math.Max(0, math.Min(nx, maxX)), c.w
 			if side == layout.Left || side == layout.Right {
+				pos, span = math.Max(0, math.Min(ny, maxY)), c.h
 				if maxY > 0 {
-					frac = math.Max(0, math.Min(ny, maxY)) / maxY
+					frac = pos / maxY
 				}
 			} else if maxX > 0 {
-				frac = math.Max(0, math.Min(nx, maxX)) / maxX
+				frac = pos / maxX
 			}
-			emit(c.events, Event{Kind: EvEdge, Side: side, Frac: frac})
+			// Linux gives no per-monitor geometry: the corners are those of
+			// the whole desktop.
+			corner := int(math.Round(math.Min(pos, float64(span-1)-pos)))
+			emit(c.events, Event{Kind: EvEdge, Side: side, Frac: frac,
+				Mods: c.keyb.mods(), Corner: corner, Span: span})
 		}
 	}
 	c.x = math.Max(0, math.Min(nx, maxX))
@@ -789,6 +802,12 @@ func (c *linuxCapture) keyOrButton(code uint16, value int32) {
 		emit(c.events, Event{Kind: EvButton, Code: b, State: uint8(value)})
 		return
 	}
+	if hit, eat := c.keyb.onKey(c.remote, code, value != 0); eat {
+		if hit >= 0 {
+			emit(c.events, Event{Kind: EvHotkey, Code: uint16(hit), Drag: c.buttons != 0})
+		}
+		return
+	}
 	if value == 2 && !c.remote {
 		return // kernel auto-repeat; the desktop repeats keys by itself
 	}
@@ -803,7 +822,9 @@ func (c *linuxCapture) keyOrButton(code uint16, value int32) {
 
 func (c *linuxCapture) Events() <-chan Event { return c.events }
 
-func (c *linuxCapture) Grab() {
+// Grab switches to remote mode. The desktop cursor stays where it is, so a
+// Release without a warp finds it there; nothing to remember for home.
+func (c *linuxCapture) Grab(home bool) {
 	c.mu.Lock()
 	c.remote = true
 	c.mu.Unlock()
@@ -826,6 +847,8 @@ func (c *linuxCapture) SetArmedEdges(mask uint8) {
 	c.armed = mask
 	c.mu.Unlock()
 }
+
+func (c *linuxCapture) SetHotkeys(list []Hotkey) { c.keyb.setHotkeys(list) }
 
 func (c *linuxCapture) Size() (int, int) { return c.w, c.h }
 

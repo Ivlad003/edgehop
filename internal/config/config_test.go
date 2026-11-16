@@ -351,3 +351,175 @@ to = "far"
 		t.Errorf("links after clearing = %+v", got.Links)
 	}
 }
+
+func TestHotkeysAndEdgeProtection(t *testing.T) {
+	c, err := Parse(`
+role = "server"
+name = "desk"
+key = "k"
+row = ["lap", "desk", "mac"]
+switch_delay_ms = 250
+switch_keys = "Ctrl + Shift"
+switch_corner = 40
+
+[screens.mac]
+hotkey = "ctrl+alt+2"
+
+[screens.lap]
+scale = 1.5
+hotkey = "none"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SwitchDelayMS != 250 || c.SwitchCorner != 40 {
+		t.Errorf("delay=%d corner=%d", c.SwitchDelayMS, c.SwitchCorner)
+	}
+	if mods, err := c.SwitchMods(); err != nil || mods != keys.ModCtrl|keys.ModShift {
+		t.Errorf("switch mods = %04b, %v", mods, err)
+	}
+	hk, err := c.ScreenHotkeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hk) != 1 || hk["mac"].Key != 3 || len(hk["mac"].Mods) != 2 {
+		t.Errorf("screen hotkeys = %+v (only mac has one; \"none\" means none)", hk)
+	}
+
+	// Without the settings everything is off, and a saved file does not
+	// mention them.
+	plain, err := Parse(`role = "server"` + "\n" + `name = "desk"` + "\n" + `key = "k"` + "\n" + `row = ["desk", "mac"]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mods, _ := plain.SwitchMods(); mods != 0 || plain.SwitchDelayMS != 0 || plain.SwitchCorner != 0 {
+		t.Errorf("the protection must be off by default: %+v", plain)
+	}
+	if hk, _ := plain.ScreenHotkeys(); len(hk) != 0 {
+		t.Errorf("hotkeys by default: %+v", hk)
+	}
+	out, err := plain.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, word := range []string{"switch_", "hotkey", "screens"} {
+		if strings.Contains(out, word) {
+			t.Errorf("an unset setting (%s) is written to the file:\n%s", word, out)
+		}
+	}
+	if none, err := Parse(`role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" + `switch_keys = "none"`); err != nil {
+		t.Errorf("switch_keys = \"none\": %v", err)
+	} else if mods, _ := none.SwitchMods(); mods != 0 {
+		t.Errorf("switch_keys = \"none\" gave %04b", mods)
+	}
+}
+
+func TestHotkeyAndEdgeProtectionErrors(t *testing.T) {
+	base := `role = "server"` + "\n" + `name = "a"` + "\n" + `key = "k"` + "\n" + `row = ["a", "b", "c"]` + "\n"
+	cases := map[string]string{
+		"switch_keys not a modifier": base + `switch_keys = "ctrl+a"`,
+		"negative delay":             base + `switch_delay_ms = -1`,
+		"huge delay":                 base + `switch_delay_ms = 60000`,
+		"negative corner":            base + `switch_corner = -5`,
+		"huge corner":                base + `switch_corner = 5000`,
+		"bad screen hotkey":          base + "[screens.b]\nhotkey = \"ctrl+banana\"",
+		"hotkey of modifiers only":   base + "[screens.b]\nhotkey = \"ctrl+alt\"",
+		"two screens, one hotkey":    base + "[screens.b]\nhotkey = \"ctrl+alt+2\"\n[screens.c]\nhotkey = \"alt+control+2\"",
+		"same as the release hotkey": base + `release_hotkey = "ctrl+alt+f1"` + "\n[screens.b]\nhotkey = \"ctrl+alt+f1\"",
+		"same as the default one":    base + "[screens.b]\nhotkey = \"ctrl+alt+shift+backspace\"",
+		"hotkey for the server":      base + "[screens.a]\nhotkey = \"ctrl+alt+1\"",
+	}
+	for name, text := range cases {
+		if _, err := Parse(text); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+	// With the release hotkey switched off, its combination is free.
+	if _, err := Parse(base + `release_hotkey = "none"` + "\n[screens.b]\nhotkey = \"ctrl+alt+shift+backspace\""); err != nil {
+		t.Errorf("a screen may use the combination of a disabled release hotkey: %v", err)
+	}
+}
+
+func TestFormHotkeysAndEdgeProtection(t *testing.T) {
+	c, err := Parse(`
+role = "server"
+name = "desk"
+key = "k"
+row = ["desk", "mac", "lap"]
+switch_keys = "none"
+
+[screens.mac]
+hotkey = "ctrl+alt+2"
+remap = { capslock = "ctrl" }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := c.Form()
+	if f.SwitchDelayMS != 0 || f.SwitchKeys != "" || f.SwitchCorner != 0 {
+		t.Fatalf("form = %+v", f)
+	}
+	if f.Screens["mac"].Hotkey != "ctrl+alt+2" {
+		t.Fatalf("form screens = %+v", f.Screens)
+	}
+
+	f.SwitchDelayMS = 300
+	f.SwitchKeys = " ctrl "
+	f.SwitchCorner = 25
+	f.Screens["mac"] = FormScreen{Scale: 1, Hotkey: " ctrl+alt+m "}
+	f.Screens["lap"] = FormScreen{Scale: 1, Hotkey: "ctrl+alt+l"}
+	c.Apply(f)
+	path := filepath.Join(t.TempDir(), "edgehop.toml")
+	if err := Save(path, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SwitchDelayMS != 300 || got.SwitchKeys != "ctrl" || got.SwitchCorner != 25 {
+		t.Errorf("saved protection: delay=%d keys=%q corner=%d", got.SwitchDelayMS, got.SwitchKeys, got.SwitchCorner)
+	}
+	if got.Screens["mac"].Hotkey != "ctrl+alt+m" || got.Screens["mac"].Remap["capslock"] != "ctrl" {
+		t.Errorf("mac = %+v (the hotkey changes, the remap stays)", got.Screens["mac"])
+	}
+	if got.Screens["lap"].Hotkey != "ctrl+alt+l" {
+		t.Errorf("a screen with only a hotkey needs its section: %+v", got.Screens)
+	}
+
+	// Switching everything off again leaves nothing behind in the file.
+	f = got.Form()
+	f.SwitchDelayMS, f.SwitchKeys, f.SwitchCorner = 0, "none", 0
+	f.Screens["mac"] = FormScreen{Scale: 1}
+	f.Screens["lap"] = FormScreen{Scale: 1, Hotkey: "none"}
+	got.Apply(f)
+	text, err := got.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text, "switch_") || strings.Contains(text, "\nhotkey") || strings.Contains(text, "screens.lap") {
+		t.Errorf("switched-off settings are still written:\n%s", text)
+	}
+	if got.Screens["mac"].Remap["capslock"] != "ctrl" {
+		t.Errorf("the remap was lost with the hotkey: %+v", got.Screens)
+	}
+
+	// What the page cannot fix by itself is refused, not silently changed.
+	f.SwitchKeys = "ctrl+q"
+	got.Apply(f)
+	if err := Save(path, got); err == nil || !strings.Contains(err.Error(), "switch_keys") {
+		t.Errorf("a bad switch_keys must be refused with a clear message, got: %v", err)
+	}
+	f.SwitchKeys = ""
+	f.SwitchDelayMS = -20
+	got.Apply(f)
+	if err := Save(path, got); err == nil || !strings.Contains(err.Error(), "switch_delay_ms") {
+		t.Errorf("a negative delay must be refused, got: %v", err)
+	}
+	f.SwitchDelayMS = 0
+	f.Screens["lap"] = FormScreen{Scale: 1, Hotkey: "ctrl+alt+shift+backspace"}
+	got.Apply(f)
+	if err := Save(path, got); err == nil || !strings.Contains(err.Error(), "release_hotkey") {
+		t.Errorf("a screen hotkey equal to the release hotkey must be refused, got: %v", err)
+	}
+}

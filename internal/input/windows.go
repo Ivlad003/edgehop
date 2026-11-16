@@ -45,6 +45,7 @@ var (
 	pGetCursorPos               = user32.NewProc("GetCursorPos")
 	pSetCursorPos               = user32.NewProc("SetCursorPos")
 	pGetCursorInfo              = user32.NewProc("GetCursorInfo")
+	pGetAsyncKeyState           = user32.NewProc("GetAsyncKeyState")
 	pGetSystemMetrics           = user32.NewProc("GetSystemMetrics")
 	pEnumDisplayMonitors        = user32.NewProc("EnumDisplayMonitors")
 	pSendInput                  = user32.NewProc("SendInput")
@@ -90,6 +91,12 @@ const (
 
 	llkhfExtended = 0x01
 	llkhfUp       = 0x80
+
+	vkShift   = 0x10
+	vkControl = 0x11
+	vkMenu    = 0x12 // Alt
+	vkLWin    = 0x5B
+	vkRWin    = 0x5C
 
 	smCXScreen        = 0
 	smCYScreen        = 1
@@ -269,6 +276,30 @@ func cursorPos() winPoint {
 	return p
 }
 
+// systemMods returns the modifier keys Windows itself takes for held. That
+// leaves out what a hook swallowed, so it only tells the truth about keys
+// pressed in local mode.
+func systemMods() uint8 {
+	down := func(vk uintptr) bool {
+		r, _, _ := pGetAsyncKeyState.Call(vk)
+		return r&0x8000 != 0
+	}
+	var m uint8
+	if down(vkControl) {
+		m |= keys.ModCtrl
+	}
+	if down(vkMenu) {
+		m |= keys.ModAlt
+	}
+	if down(vkShift) {
+		m |= keys.ModShift
+	}
+	if down(vkLWin) || down(vkRWin) {
+		m |= keys.ModMeta
+	}
+	return m
+}
+
 // ---------------------------------------------------------------------------
 // Capture
 
@@ -283,9 +314,12 @@ type winCapture struct {
 	remote       bool
 	desk         layout.Desktop
 	park         winPoint
-	buttons      uint32 // physically held
-	localButtons uint32 // pressed while in local mode
+	home         winPoint // where the cursor was when a hotkey sent it away
+	keepHome     bool     // ... and whether to put it back there
+	buttons      uint32   // physically held
+	localButtons uint32   // pressed while in local mode
 	kt           keyTracker
+	keyb         keyboard
 	hkKey        uintptr
 	hkMouse      uintptr
 	shield       uintptr
@@ -389,7 +423,7 @@ func (c *winCapture) loop(ready chan<- error) {
 		}
 		switch {
 		case m.hwnd == 0 && m.message == wmGrab:
-			c.doGrab()
+			c.doGrab(m.wParam != 0)
 		case m.hwnd == 0 && m.message == wmRelease:
 			c.doRelease(layout.Side(m.wParam&0xFF), float64(m.lParam)/1e6, m.wParam&0x100 != 0)
 		case m.hwnd == 0 && m.message == wmStop:
@@ -426,10 +460,11 @@ func (c *winCapture) createShield(hmod uintptr) {
 	c.shield = hwnd
 }
 
-func (c *winCapture) doGrab() {
+func (c *winCapture) doGrab(home bool) {
 	if c.remote {
 		return
 	}
+	c.home, c.keepHome = cursorPos(), home
 	c.desk = layout.NewDesktop(Monitors())
 	c.park = winPoint{int32(metric(smCXScreen) / 2), int32(metric(smCYScreen) / 2)}
 	if c.shield != 0 {
@@ -451,7 +486,12 @@ func (c *winCapture) doRelease(side layout.Side, frac float64, warp bool) {
 	if warp {
 		x, y := c.desk.Entry(side, frac, 2)
 		setCursorPos(x, y)
+	} else if c.keepHome {
+		// A hotkey took the cursor away from the middle of some work; it
+		// comes back to that place rather than to where it was parked.
+		setCursorPos(int(c.home.x), int(c.home.y))
 	}
+	c.keepHome = false
 }
 
 // mouse handles one low-level mouse event; it returns true to swallow it.
@@ -463,7 +503,11 @@ func (c *winCapture) mouse(msg uint32, ms *msllHook) bool {
 				if armed := uint8(c.armed.Load()); armed != 0 {
 					x, y := int(ms.pt.x), int(ms.pt.y)
 					if side, ok := layout.FirstSide(c.desk.Edges(x, y) & armed); ok {
-						emit(c.events, Event{Kind: EvEdge, Side: side, Frac: c.desk.Frac(side, x, y)})
+						sys := systemMods()
+						c.keyb.keep(sys)
+						corner, span := c.desk.Corner(side, x, y)
+						emit(c.events, Event{Kind: EvEdge, Side: side, Frac: c.desk.Frac(side, x, y),
+							Mods: sys | c.keyb.mods(), Corner: corner, Span: span})
 					}
 				}
 			}
@@ -474,7 +518,7 @@ func (c *winCapture) mouse(msg uint32, ms *msllHook) bool {
 		cur := cursorPos()
 		dx, dy := ms.pt.x-cur.x, ms.pt.y-cur.y
 		if dx != 0 || dy != 0 {
-			emit(c.events, Event{Kind: EvMotion, DX: float64(dx), DY: float64(dy)})
+			emit(c.events, Event{Kind: EvMotion, DX: float64(dx), DY: float64(dy), Mods: c.keyb.mods()})
 		}
 		if cur != c.park {
 			setCursorPos(int(c.park.x), int(c.park.y))
@@ -551,11 +595,41 @@ func (c *winCapture) key(kb *kbdllHook) bool {
 		scan = uint32(r)
 	}
 	code := keys.FromWindows(kb.vk, scan, kb.flags&llkhfExtended != 0)
-	forward, state, swallow := c.kt.onKey(c.remote, code, kb.flags&llkhfUp == 0)
+	down := kb.flags&llkhfUp == 0
+	if down && !c.remote {
+		c.keyb.keep(systemMods())
+	}
+	hit, eat := c.keyb.onKey(c.remote, code, down)
+	if down && leavesDesktop(code, c.keyb.mods()) {
+		// Windows now shows the lock screen or the Ctrl+Alt+Del screen and
+		// keeps the releases of these keys to itself. Forget them here,
+		// rather than believe for ever that Ctrl and Alt are held.
+		c.keyb.reset()
+	}
+	if eat {
+		if hit >= 0 {
+			emit(c.events, Event{Kind: EvHotkey, Code: uint16(hit), Drag: c.buttons != 0})
+		}
+		return true
+	}
+	forward, state, swallow := c.kt.onKey(c.remote, code, down)
 	if forward {
 		emit(c.events, Event{Kind: EvKey, Code: code, State: state})
 	}
 	return swallow
+}
+
+// leavesDesktop reports whether pressing code with these modifier keys held
+// makes Windows switch to its secure desktop: Win+L and Ctrl+Alt+Del. No
+// program can stop those two.
+func leavesDesktop(code uint16, mods uint8) bool {
+	switch code {
+	case keys.L:
+		return mods&keys.ModMeta != 0
+	case keys.Delete, keys.KPDot:
+		return mods&(keys.ModCtrl|keys.ModAlt) == keys.ModCtrl|keys.ModAlt
+	}
+	return false
 }
 
 func (c *winCapture) post(msg uint32, wparam, lparam uintptr) {
@@ -563,7 +637,14 @@ func (c *winCapture) post(msg uint32, wparam, lparam uintptr) {
 }
 
 func (c *winCapture) Events() <-chan Event { return c.events }
-func (c *winCapture) Grab()                { c.post(wmGrab, 0, 0) }
+
+func (c *winCapture) Grab(home bool) {
+	var w uintptr
+	if home {
+		w = 1
+	}
+	c.post(wmGrab, w, 0)
+}
 
 func (c *winCapture) Release(side layout.Side, frac float64, warp bool) {
 	w := uintptr(side)
@@ -574,6 +655,7 @@ func (c *winCapture) Release(side layout.Side, frac float64, warp bool) {
 }
 
 func (c *winCapture) SetArmedEdges(mask uint8) { c.armed.Store(uint32(mask)) }
+func (c *winCapture) SetHotkeys(list []Hotkey) { c.keyb.setHotkeys(list) }
 
 func (c *winCapture) Size() (int, int) {
 	v := virtualScreen()
@@ -760,7 +842,7 @@ func SelfTest(out io.Writer, grab bool) error {
 
 	orig := cursorPos()
 	park := winPoint{int32(metric(smCXScreen) / 2), int32(metric(smCYScreen) / 2)}
-	c.Grab()
+	c.Grab(false)
 	time.Sleep(120 * time.Millisecond)
 	afterGrab := cursorPos()
 	var info cursorInfo
@@ -942,6 +1024,10 @@ func describeEvents(evs []Event) string {
 			parts = append(parts, fmt.Sprintf("wheel %d,%d", e.WX, e.WY))
 		case EvMotion:
 			parts = append(parts, fmt.Sprintf("motion %.0f,%.0f", e.DX, e.DY))
+		case EvHotkey:
+			parts = append(parts, fmt.Sprintf("hotkey %d", e.Code))
+		case EvEdge:
+			parts = append(parts, fmt.Sprintf("edge %s at %.2f", e.Side, e.Frac))
 		default:
 			parts = append(parts, fmt.Sprintf("event kind %d", e.Kind))
 		}

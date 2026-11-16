@@ -36,8 +36,10 @@ type fakeCapture struct {
 
 	mu       sync.Mutex
 	grabs    int
+	homes    []bool // the argument of every Grab
 	releases []string
 	armed    uint8
+	hotkeys  []input.Hotkey
 }
 
 func newFakeCapture() *fakeCapture { return &fakeCapture{ch: make(chan input.Event, 1024)} }
@@ -46,10 +48,26 @@ func (f *fakeCapture) Events() <-chan input.Event { return f.ch }
 func (f *fakeCapture) Size() (int, int)           { return 1920, 1080 }
 func (f *fakeCapture) Describe() string           { return "fake" }
 func (f *fakeCapture) Close()                     {}
-func (f *fakeCapture) Grab() {
+func (f *fakeCapture) Grab(home bool) {
 	f.mu.Lock()
 	f.grabs++
+	f.homes = append(f.homes, home)
 	f.mu.Unlock()
+}
+func (f *fakeCapture) SetHotkeys(list []input.Hotkey) {
+	f.mu.Lock()
+	f.hotkeys = append([]input.Hotkey(nil), list...)
+	f.mu.Unlock()
+}
+func (f *fakeCapture) registered() []input.Hotkey {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]input.Hotkey(nil), f.hotkeys...)
+}
+func (f *fakeCapture) grabbed() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool(nil), f.homes...)
 }
 func (f *fakeCapture) Release(side layout.Side, frac float64, warp bool) {
 	f.mu.Lock()
@@ -76,6 +94,13 @@ func (f *fakeCapture) edge(side layout.Side, frac float64) {
 }
 func (f *fakeCapture) move(dx, dy float64) {
 	f.ch <- input.Event{Kind: input.EvMotion, DX: dx, DY: dy}
+}
+
+// hotkey reports hotkey number i of the list the server registered. A real
+// capture recognises the keys itself and hides the key that completed the
+// combination, so the server never sees that key.
+func (f *fakeCapture) hotkey(i int) {
+	f.ch <- input.Event{Kind: input.EvHotkey, Code: uint16(i)}
 }
 func (f *fakeCapture) key(code uint16, state uint8) {
 	f.ch <- input.Event{Kind: input.EvKey, Code: code, State: state}
@@ -384,7 +409,7 @@ func TestReleaseHotkey(t *testing.T) {
 	r.cap.key(keys.LeftCtrl, keys.Down)
 	r.cap.key(keys.LeftAlt, keys.Down)
 	r.cap.key(keys.LeftShift, keys.Down)
-	r.cap.key(keys.Backspace, keys.Down)
+	r.cap.hotkey(0) // Backspace completes the release hotkey
 	r.waitFocus("")
 	eventually(t, "modifiers released on the client", func() bool {
 		return mac.has("releaseall")

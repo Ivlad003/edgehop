@@ -321,6 +321,7 @@ type screenStatus struct {
 	UDP       bool    `json:"udp,omitempty"`
 	Files     bool    `json:"files,omitempty"` // files can be sent to it
 	RTTMs     float64 `json:"rttMs,omitempty"`
+	Hotkey    string  `json:"hotkey,omitempty"` // moves the cursor to it
 }
 
 type serverStatus struct {
@@ -440,13 +441,21 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	if err != nil {
 		return err
 	}
+	jumpKeys, err := cfg.ScreenHotkeys()
+	if err != nil {
+		return err
+	}
+	switchMods, err := cfg.SwitchMods()
+	if err != nil {
+		return err
+	}
 	screens := map[string]server.ScreenOpts{}
 	for name, s := range cfg.Screens {
 		remap, err := keys.ParseRemap(s.Remap)
 		if err != nil {
 			return err
 		}
-		screens[name] = server.ScreenOpts{Scale: s.Scale, Remap: remap}
+		screens[name] = server.ScreenOpts{Scale: s.Scale, Remap: remap, Hotkey: jumpKeys[name]}
 	}
 
 	var capture input.Capture
@@ -461,7 +470,10 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	srv := server.New(server.Config{
 		Name: cfg.Name, Listen: cfg.Listen, Key: cfg.Key,
 		Layout: lay, Screens: screens, Hotkey: hotkey, AutoScale: true,
-		Clipboard: cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
+		SwitchDelay:  time.Duration(cfg.SwitchDelayMS) * time.Millisecond,
+		SwitchMods:   switchMods,
+		SwitchCorner: cfg.SwitchCorner,
+		Clipboard:    cb, ClipDir: clipDir, ClipLimit: cfg.ClipboardLimit(),
 		DropDir: cfg.DownloadDir(),
 	}, capture)
 	files := &sender{downloads: cfg.DownloadDir()}
@@ -482,6 +494,14 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 	} else {
 		logx.Infof("layout:\n%s", strings.TrimRight(lay.Describe(), "\n"))
 		logx.Infof("waiting for the other computers; %s returns the cursor here", hotkeyText(cfg))
+		for _, n := range order {
+			if _, ok := jumpKeys[n]; ok {
+				logx.Infof("hotkey: %s moves the cursor to %s", strings.TrimSpace(cfg.Screens[n].Hotkey), n)
+			}
+		}
+		if guard := guardText(cfg, switchMods); guard != "" {
+			logx.Infof("to cross a screen edge: %s", guard)
+		}
 	}
 	if child {
 		go reportStatus(ctx, func() any {
@@ -495,6 +515,9 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 			}
 			for _, n := range order {
 				s := screenStatus{Name: n, Self: n == cfg.Name}
+				if _, ok := jumpKeys[n]; ok {
+					s.Hotkey = strings.TrimSpace(cfg.Screens[n].Hotkey)
+				}
 				if c, ok := clients[n]; ok {
 					s.Connected, s.OS, s.W, s.H, s.UDP, s.RTTMs = true, c.OS, c.W, c.H, c.UDP, c.RTTMs
 					s.Files = c.Files
@@ -505,6 +528,22 @@ func runServer(ctx context.Context, cfg *config.Config, opts input.Options, noIn
 		})
 	}
 	return srv.Serve(ctx)
+}
+
+// guardText describes the protection against crossing an edge by accident,
+// "" when none is configured.
+func guardText(cfg *config.Config, mods uint8) string {
+	var parts []string
+	if mods != 0 {
+		parts = append(parts, "hold "+keys.ModsText(mods, runtime.GOOS))
+	}
+	if cfg.SwitchDelayMS > 0 {
+		parts = append(parts, fmt.Sprintf("press against the edge for %d ms", cfg.SwitchDelayMS))
+	}
+	if cfg.SwitchCorner > 0 {
+		parts = append(parts, fmt.Sprintf("stay %d pixels away from the screen corners", cfg.SwitchCorner))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func hotkeyText(cfg *config.Config) string {

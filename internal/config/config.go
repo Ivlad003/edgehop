@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -43,6 +44,19 @@ type Config struct {
 	Links         []Link            `toml:"links,omitempty"`
 	Screens       map[string]Screen `toml:"screens,omitempty"`
 
+	// Server only: protection against crossing an edge by accident. All
+	// three are off unless set.
+	//
+	// SwitchDelayMS: the cursor has to press against the edge for this many
+	// milliseconds before it crosses.
+	// SwitchKeys: the cursor crosses only while these modifier keys are held,
+	// e.g. "ctrl" or "ctrl+shift"; "none" or empty switches it off.
+	// SwitchCorner: no crossing within this many pixels of a screen corner,
+	// so that hot corners and the Start button stay reachable.
+	SwitchDelayMS int    `toml:"switch_delay_ms,omitzero"`
+	SwitchKeys    string `toml:"switch_keys,omitempty"`
+	SwitchCorner  int    `toml:"switch_corner,omitzero"`
+
 	// Client only.
 	Server string `toml:"server,omitempty"`
 
@@ -76,7 +90,17 @@ type Screen struct {
 	Scale float64 `toml:"scale,omitzero"`
 	// Remap replaces keys sent to that screen, e.g. {alt = "meta", meta = "alt"}.
 	Remap map[string]string `toml:"remap,omitempty"`
+	// Hotkey moves the cursor to that screen from wherever it is, e.g.
+	// "ctrl+alt+2". Empty or "none": no hotkey.
+	Hotkey string `toml:"hotkey,omitempty"`
 }
+
+// The largest values accepted for the edge protection: beyond them the
+// cursor would practically never cross.
+const (
+	MaxSwitchDelayMS = 5000
+	MaxSwitchCorner  = 1000
+)
 
 // Path returns the file the config was loaded from.
 func (c *Config) Path() string { return c.path }
@@ -193,6 +217,18 @@ func (c *Config) validate() error {
 				return fmt.Errorf("screens.%s: %w", name, err)
 			}
 		}
+		if _, err := c.ScreenHotkeys(); err != nil {
+			return err
+		}
+		if c.SwitchDelayMS < 0 || c.SwitchDelayMS > MaxSwitchDelayMS {
+			return fmt.Errorf("`switch_delay_ms` must be between 0 and %d, not %d", MaxSwitchDelayMS, c.SwitchDelayMS)
+		}
+		if c.SwitchCorner < 0 || c.SwitchCorner > MaxSwitchCorner {
+			return fmt.Errorf("`switch_corner` must be between 0 and %d pixels, not %d", MaxSwitchCorner, c.SwitchCorner)
+		}
+		if _, err := c.SwitchMods(); err != nil {
+			return err
+		}
 	case "client":
 		if c.Server == "" {
 			return errors.New("`server` is missing (the address of the computer the mouse is connected to)")
@@ -263,6 +299,51 @@ func (c *Config) Hotkey() (keys.Hotkey, error) {
 		s = *c.ReleaseHotkey
 	}
 	return keys.ParseHotkey(s)
+}
+
+// ScreenHotkeys returns the parsed hotkey of every screen that has one, by
+// screen name. No two screens may share a hotkey, and none may be the same
+// as the release hotkey: a key combination can only mean one thing.
+func (c *Config) ScreenHotkeys() (map[string]keys.Hotkey, error) {
+	out := map[string]keys.Hotkey{}
+	taken := map[string]string{}
+	if release, err := c.Hotkey(); err == nil && release.Key != 0 {
+		taken[release.ID()] = "`release_hotkey`"
+	}
+	names := make([]string, 0, len(c.Screens))
+	for name := range c.Screens {
+		names = append(names, name)
+	}
+	sort.Strings(names) // so that the same file always gives the same error
+	for _, name := range names {
+		text := c.Screens[name].Hotkey
+		h, err := keys.ParseHotkey(text)
+		if err != nil {
+			return nil, fmt.Errorf("screens.%s: %w", name, err)
+		}
+		if h.Key == 0 {
+			continue
+		}
+		if name == c.Name {
+			return nil, fmt.Errorf("screens.%s.hotkey: %q is this computer itself - the hotkey that brings the cursor back here is `release_hotkey`", name, name)
+		}
+		if other, dup := taken[h.ID()]; dup {
+			return nil, fmt.Errorf("screens.%s.hotkey %q is already used by %s", name, text, other)
+		}
+		taken[h.ID()] = "screens." + name
+		out[name] = h
+	}
+	return out, nil
+}
+
+// SwitchMods returns the modifier keys that must be held for the cursor to
+// cross an edge (keys.Mod*), 0 when none are required.
+func (c *Config) SwitchMods() (uint8, error) {
+	mods, err := keys.ParseMods(c.SwitchKeys)
+	if err != nil {
+		return 0, fmt.Errorf("`switch_keys`: %w", err)
+	}
+	return mods, nil
 }
 
 // ClipboardEnabled reports whether the clipboard is shared (default true).
@@ -358,10 +439,16 @@ release_hotkey = %q
 # Hide this computer's cursor while it controls another one.
 hide_cursor = true
 
+# Protection against crossing an edge by accident (all off by default):
+# switch_delay_ms = 250   # press against the edge this long before crossing
+# switch_keys = "ctrl"    # cross only while these keys are held
+# switch_corner = 40      # no crossing within this many pixels of a corner
+
 # Per-screen options (optional):
 # [screens.%s]
 # scale = 1.0                             # cursor speed on that screen
 # remap = { alt = "meta", meta = "alt" }  # e.g. PC keyboard driving a Mac
+# hotkey = "ctrl+alt+2"                   # jump to that screen from anywhere
 `, name, key, port, name, strings.Join(quoted, ", "), name, DefaultHotkey, example)
 }
 
@@ -418,6 +505,9 @@ type Form struct {
 	ScreenSize     string                `json:"screenSize"`
 	Clipboard      bool                  `json:"clipboard"`
 	ClipboardMaxMB int                   `json:"clipboardMaxMB"`
+	SwitchDelayMS  int                   `json:"switchDelayMs"` // 0: cross at once
+	SwitchKeys     string                `json:"switchKeys"`    // "": no keys needed
+	SwitchCorner   int                   `json:"switchCorner"`  // 0: corners are not protected
 	Screens        map[string]FormScreen `json:"screens"`
 }
 
@@ -425,6 +515,16 @@ type Form struct {
 type FormScreen struct {
 	Scale       float64 `json:"scale"`
 	SwapAltMeta bool    `json:"swapAltMeta"` // PC keyboard driving a Mac, or the reverse
+	Hotkey      string  `json:"hotkey"`      // moves the cursor to that screen; "": none
+}
+
+// noneIsEmpty trims a setting that can be switched off with the word "none".
+func noneIsEmpty(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.EqualFold(s, "none") {
+		return ""
+	}
+	return s
 }
 
 func hasSwap(remap map[string]string) bool {
@@ -453,6 +553,9 @@ func (c *Config) Form() Form {
 		ScreenSize:     c.ScreenSize,
 		Clipboard:      c.ClipboardEnabled(),
 		ClipboardMaxMB: int(c.ClipboardLimit() >> 20),
+		SwitchDelayMS:  c.SwitchDelayMS,
+		SwitchKeys:     noneIsEmpty(c.SwitchKeys),
+		SwitchCorner:   c.SwitchCorner,
 		Screens:        map[string]FormScreen{},
 	}
 	if c.ReleaseHotkey != nil {
@@ -467,7 +570,7 @@ func (c *Config) Form() Form {
 		if scale == 0 {
 			scale = 1
 		}
-		f.Screens[name] = FormScreen{Scale: scale, SwapAltMeta: hasSwap(s.Remap)}
+		f.Screens[name] = FormScreen{Scale: scale, SwapAltMeta: hasSwap(s.Remap), Hotkey: noneIsEmpty(s.Hotkey)}
 	}
 	return f
 }
@@ -532,6 +635,11 @@ func (c *Config) Apply(f Form) {
 	c.ReleaseHotkey = &hotkey
 	hide := f.HideCursor
 	c.HideCursor = &hide
+	// Out of range values are left for the validation to refuse; a save must
+	// not quietly turn them into something the user did not ask for.
+	c.SwitchDelayMS = f.SwitchDelayMS
+	c.SwitchKeys = noneIsEmpty(f.SwitchKeys)
+	c.SwitchCorner = f.SwitchCorner
 
 	// Per-screen options: only for screens that are still part of the layout.
 	known := map[string]bool{}
@@ -566,7 +674,8 @@ func (c *Config) Apply(f Form) {
 				delete(s.Remap, "meta")
 			}
 		}
-		if s.Scale == 0 && len(s.Remap) == 0 {
+		s.Hotkey = noneIsEmpty(fs.Hotkey)
+		if s.Scale == 0 && len(s.Remap) == 0 && s.Hotkey == "" {
 			delete(c.Screens, name)
 			continue
 		}

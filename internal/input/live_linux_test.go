@@ -327,13 +327,69 @@ func TestLiveCapture(t *testing.T) {
 	}
 
 	// --- the edge --------------------------------------------------------------
+	// The cursor is 245 pixels below the top corner of the 500 pixel edge.
+	edge := Event{Kind: EvEdge, Side: layout.Right, Frac: 245.0 / 499.0, Corner: 245, Span: 500}
 	physMouse.write(rel(relX, 1))
-	expectCaptured(t, "edge", c.Events(), Event{Kind: EvEdge, Side: layout.Right, Frac: 245.0 / 499.0})
+	expectCaptured(t, "edge", c.Events(), edge)
+
+	// With Ctrl held, the edge event says so.
+	physKbd.write(key(keys.LeftCtrl, 1))
+	expectEvs(t, "ctrl in local mode", outKbd.collect(150*time.Millisecond), []ev{{evKey, keys.LeftCtrl, 1}})
+	withCtrl := edge
+	withCtrl.Mods = keys.ModCtrl
+	physMouse.write(rel(relX, 1))
+	expectCaptured(t, "edge with ctrl held", c.Events(), withCtrl)
+
+	// --- hotkeys in local mode -------------------------------------------------
+	const two = keys.Num1 + 1 // the key "2"
+	c.SetHotkeys([]Hotkey{
+		{Hotkey: mustHotkey(t, "ctrl+alt+shift+backspace"), RemoteOnly: true},
+		{Hotkey: mustHotkey(t, "ctrl+alt+2")},
+	})
+	// Ctrl+Alt+2: reported once, and the 2 reaches nobody - not as a press,
+	// not as auto-repeat, not as a release. Alt was pressed before anyone
+	// could know what it was for, so the desktop has seen it.
+	physKbd.write(key(keys.LeftAlt, 1))
+	physKbd.write(key(two, 1))
+	physKbd.write(key(two, 2))
+	physKbd.write(key(two, 0))
+	expectCaptured(t, "hotkey in local mode", c.Events(), Event{Kind: EvHotkey, Code: 1})
+	expectEvs(t, "the last key of a hotkey is hidden from the local desktop", outKbd.collect(150*time.Millisecond), []ev{{evKey, keys.LeftAlt, 1}})
+
+	// Pressed while a mouse button is held, the hotkey says that too.
+	physMouse.write(key(btnLeft, 1))
+	expectEvs(t, "button down", outPtr.collect(150*time.Millisecond), []ev{{evKey, btnLeft, 1}})
+	physKbd.write(key(two, 1))
+	physKbd.write(key(two, 0))
+	expectCaptured(t, "hotkey during a drag", c.Events(), Event{Kind: EvHotkey, Code: 1, Drag: true})
+	physMouse.write(key(btnLeft, 0))
+	expectEvs(t, "button up", outPtr.collect(150*time.Millisecond), []ev{{evKey, btnLeft, 0}})
+
+	// The release hotkey only counts while another computer has the cursor:
+	// here Ctrl+Alt+Shift+Backspace is typed like anything else.
+	physKbd.write(key(keys.LeftShift, 1))
+	physKbd.write(key(keys.Backspace, 1))
+	physKbd.write(key(keys.Backspace, 0))
+	physKbd.write(key(keys.LeftShift, 0))
+	physKbd.write(key(keys.LeftAlt, 0))
+	physKbd.write(key(keys.LeftCtrl, 0))
+	expectEvs(t, "a remote-only hotkey in local mode is ordinary typing", outKbd.collect(150*time.Millisecond), []ev{
+		{evKey, keys.LeftShift, 1}, {evKey, keys.Backspace, 1}, {evKey, keys.Backspace, 0},
+		{evKey, keys.LeftShift, 0}, {evKey, keys.LeftAlt, 0}, {evKey, keys.LeftCtrl, 0},
+	})
+	select {
+	case e := <-c.Events():
+		t.Fatalf("a remote-only hotkey was reported in local mode: %+v", e)
+	default:
+	}
+	// Ctrl is up again: the edge is a plain edge.
+	physMouse.write(rel(relX, 1))
+	expectCaptured(t, "edge after ctrl was released", c.Events(), edge)
 
 	// Shift goes down locally, then the cursor crosses over.
 	physKbd.write(key(keys.LeftShift, 1))
 	expectEvs(t, "shift before the switch", outKbd.collect(150*time.Millisecond), []ev{{evKey, keys.LeftShift, 1}})
-	c.Grab()
+	c.Grab(false)
 
 	// --- remote mode: swallowed and reported -----------------------------------
 	physKbd.write(key(keys.B, 1))
@@ -350,7 +406,8 @@ func TestLiveCapture(t *testing.T) {
 	physMouse.write(rel(relWheelHiRes, -120), rel(relWheel, -1))
 	physMouse.write(rel(relHWheelHiRes, 240), rel(relHWheel, 2))
 	expectCaptured(t, "remote mouse", c.Events(),
-		Event{Kind: EvMotion, DX: 7, DY: 3},
+		// Shift is physically held (since before the switch): the movement says so.
+		Event{Kind: EvMotion, DX: 7, DY: 3, Mods: keys.ModShift},
 		Event{Kind: EvButton, Code: keys.ButtonRight, State: 1},
 		Event{Kind: EvButton, Code: keys.ButtonRight, State: 0},
 		Event{Kind: EvWheel, WY: -120},
@@ -358,6 +415,29 @@ func TestLiveCapture(t *testing.T) {
 	)
 	expectEvs(t, "nothing reaches the local desktop in remote mode (keyboard)", outKbd.collect(150*time.Millisecond), nil)
 	expectEvs(t, "nothing reaches the local desktop in remote mode (pointer)", outPtr.collect(150*time.Millisecond), nil)
+
+	// --- hotkeys in remote mode ------------------------------------------------
+	// With the Shift from before, Ctrl and Alt pressed here, Backspace
+	// completes the release hotkey. Ctrl and Alt are forwarded like any key;
+	// Backspace is not, and neither is the 2 of the other hotkey.
+	physKbd.write(key(keys.LeftCtrl, 1))
+	physKbd.write(key(keys.LeftAlt, 1))
+	physKbd.write(key(keys.Backspace, 1))
+	physKbd.write(key(keys.Backspace, 2))
+	physKbd.write(key(keys.Backspace, 0))
+	physKbd.write(key(two, 1))
+	physKbd.write(key(two, 0))
+	physKbd.write(key(keys.LeftAlt, 0))
+	physKbd.write(key(keys.LeftCtrl, 0))
+	expectCaptured(t, "hotkeys in remote mode", c.Events(),
+		Event{Kind: EvKey, Code: keys.LeftCtrl, State: keys.Down},
+		Event{Kind: EvKey, Code: keys.LeftAlt, State: keys.Down},
+		Event{Kind: EvHotkey, Code: 0},
+		Event{Kind: EvHotkey, Code: 1},
+		Event{Kind: EvKey, Code: keys.LeftAlt, State: keys.Up},
+		Event{Kind: EvKey, Code: keys.LeftCtrl, State: keys.Up},
+	)
+	expectEvs(t, "hotkeys in remote mode leave the local desktop alone", outKbd.collect(150*time.Millisecond), nil)
 
 	// The shift that was pressed locally is released locally, not remotely.
 	physKbd.write(key(keys.LeftShift, 0))

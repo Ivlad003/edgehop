@@ -6,6 +6,7 @@
 package input
 
 import (
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/Ivlad003/edgehop/internal/keys"
@@ -27,6 +28,9 @@ const (
 	EvWheel
 	// EvKey: in remote mode, a key changed (Code, State = keys.Up/Down/Repeat).
 	EvKey
+	// EvHotkey: in either mode, one of the hotkeys given to SetHotkeys was
+	// pressed; Code is its index in that list.
+	EvHotkey
 )
 
 // Event is one captured input event.
@@ -36,26 +40,46 @@ type Event struct {
 	Frac   float64     // EvEdge: position along the edge, 0..1
 	DX, DY float64     // EvMotion
 	WX, WY int32       // EvWheel
-	Code   uint16      // EvButton: keys.Button*, EvKey: key code
+	Code   uint16      // EvButton: keys.Button*, EvKey: key code, EvHotkey: index
 	State  uint8       // EvButton: 0/1, EvKey: keys.Up/Down/Repeat
+	// EvEdge, EvMotion: the modifier keys held at that moment (keys.Mod*).
+	Mods uint8
+	// EvEdge: how far the cursor is, in pixels along the edge, from the
+	// nearest corner of the monitor it is on, and how long that edge is.
+	Corner, Span int
+	// EvHotkey: a mouse button is held down - the user is dragging something.
+	Drag bool
+}
+
+// Hotkey is a key combination the capture watches for.
+type Hotkey struct {
+	keys.Hotkey
+	// RemoteOnly limits it to remote mode; in local mode the keys reach the
+	// local desktop as usual.
+	RemoteOnly bool
 }
 
 // Capture watches the physical mouse and keyboard of the server.
 //
 // It has two modes. In local mode input reaches the local desktop as usual
-// and the only events delivered are EvEdge. In remote mode (after Grab) the
-// input is swallowed - the local desktop no longer sees it - and delivered as
-// events to be forwarded to another computer.
+// and the only events delivered are EvEdge and EvHotkey. In remote mode
+// (after Grab) the input is swallowed - the local desktop no longer sees it -
+// and delivered as events to be forwarded to another computer.
 type Capture interface {
 	// Events is the stream of captured events.
 	Events() <-chan Event
-	// Grab switches to remote mode.
-	Grab()
+	// Grab switches to remote mode. home tells that the cursor is sent away
+	// from wherever it is (a hotkey), not through an edge: a later Release
+	// without a warp then puts it back at that very place.
+	Grab(home bool)
 	// Release switches back to local mode. If warp is set, the cursor is
 	// placed where it enters the desktop: on the given side, at frac.
 	Release(side layout.Side, frac float64, warp bool)
 	// SetArmedEdges selects which edges produce EvEdge (a mask of Side.Bit()).
 	SetArmedEdges(mask uint8)
+	// SetHotkeys replaces the key combinations that produce EvHotkey. The key
+	// that completes one never reaches any desktop.
+	SetHotkeys(list []Hotkey)
 	// Size is the size of the whole desktop in pixels.
 	Size() (w, h int)
 	// Describe returns a short human readable description of the backend.
@@ -146,6 +170,112 @@ func (t *keyTracker) onKey(remote bool, code uint16, down bool) (forward bool, s
 // already released them there when it switched away.
 func (t *keyTracker) clearRemote() { t.remoteDown = [keys.MaxCode]bool{} }
 
+// keyboard follows the physical keyboard of the server in both modes: which
+// keys are held, and whether a key press completes a hotkey.
+//
+// The key that completes a hotkey is hidden from the local desktop and from
+// the remote computer alike, from its press to its release (auto-repeat
+// included), so a hotkey never types anything anywhere. The modifier keys of
+// the hotkey are not hidden: they were pressed before anyone could know.
+//
+// Everything but the hotkey list belongs to the capture's own thread (or is
+// guarded by its lock).
+type keyboard struct {
+	hotkeys atomic.Pointer[[]Hotkey]
+	down    [keys.MaxCode]bool // physically held
+	far     [keys.MaxCode]bool // ... and pressed in remote mode: the local system never saw it
+	eaten   [keys.MaxCode]bool // its press completed a hotkey
+}
+
+func (k *keyboard) setHotkeys(list []Hotkey) {
+	cp := append([]Hotkey(nil), list...)
+	k.hotkeys.Store(&cp)
+}
+
+// onKey processes one physical key event, before anything else looks at it.
+//
+//	hit:     the index of the hotkey this press completed, or -1
+//	swallow: hide the event from the local desktop and from the remote side
+func (k *keyboard) onKey(remote bool, code uint16, down bool) (hit int, swallow bool) {
+	if code == 0 || code >= keys.MaxCode {
+		return -1, false
+	}
+	if !down {
+		k.down[code], k.far[code] = false, false
+		if k.eaten[code] {
+			k.eaten[code] = false
+			return -1, true
+		}
+		return -1, false
+	}
+	if k.eaten[code] {
+		return -1, true // auto-repeat of the key that completed a hotkey
+	}
+	if k.down[code] {
+		return -1, false // auto-repeat
+	}
+	k.down[code], k.far[code] = true, remote
+	list := k.hotkeys.Load()
+	if list == nil {
+		return -1, false
+	}
+	// A hotkey also matches with more modifier keys held than it asks for,
+	// so "ctrl+2" and "ctrl+alt+2" both match Ctrl+Alt+2: the one that asks
+	// for more keys is the one that was meant.
+	held := func(c uint16) bool { return c < keys.MaxCode && k.down[c] }
+	hit = -1
+	for i, h := range *list {
+		if h.RemoteOnly && !remote {
+			continue
+		}
+		if h.Match(code, held) && (hit < 0 || len(h.Mods) > len((*list)[hit].Mods)) {
+			hit = i
+		}
+	}
+	if hit < 0 {
+		return -1, false
+	}
+	k.eaten[code] = true
+	return hit, true
+}
+
+// mods returns the modifier keys that are held (keys.Mod*).
+func (k *keyboard) mods() uint8 {
+	var m uint8
+	for i, pair := range keys.ModKeys {
+		if k.down[pair[0]] || k.down[pair[1]] {
+			m |= 1 << i
+		}
+	}
+	return m
+}
+
+// keep is for local mode, where the operating system sees the keyboard too:
+// it forgets the modifier keys outside mask, the ones the system says are not
+// held. A release can go unnoticed - Windows, for one, does not show it to a
+// hook while the lock screen is up - and a modifier believed to be held for
+// ever would fire hotkeys by itself. A key pressed in remote mode stays: the
+// system never heard of it, so it cannot tell.
+func (k *keyboard) keep(mask uint8) {
+	for i, pair := range keys.ModKeys {
+		if mask&(1<<i) != 0 {
+			continue
+		}
+		for _, c := range pair {
+			if !k.far[c] {
+				k.down[c] = false
+			}
+		}
+	}
+}
+
+// reset forgets every key.
+func (k *keyboard) reset() {
+	k.down = [keys.MaxCode]bool{}
+	k.far = [keys.MaxCode]bool{}
+	k.eaten = [keys.MaxCode]bool{}
+}
+
 // emit delivers an event without ever blocking the capture thread.
 func emit(ch chan Event, ev Event) {
 	select {
@@ -171,9 +301,10 @@ func NewNullCapture(w, h int) *NullCapture {
 }
 
 func (n *NullCapture) Events() <-chan Event               { return n.ch }
-func (n *NullCapture) Grab()                              {}
+func (n *NullCapture) Grab(bool)                          {}
 func (n *NullCapture) Release(layout.Side, float64, bool) {}
 func (n *NullCapture) SetArmedEdges(uint8)                {}
+func (n *NullCapture) SetHotkeys([]Hotkey)                {}
 func (n *NullCapture) Size() (int, int)                   { return n.W, n.H }
 func (n *NullCapture) Describe() string                   { return "none (--no-input)" }
 func (n *NullCapture) Close()                             {}

@@ -41,12 +41,17 @@ const (
 	readTimeout    = 15 * time.Second
 	udpTimeout     = 5 * time.Second
 	maxDrain       = 512
+	// pressGap is the longest pause between two mouse movements that still
+	// counts as one continuous press against a screen edge (see SwitchDelay).
+	pressGap = 150 * time.Millisecond
 )
 
 // ScreenOpts are the per-client options.
 type ScreenOpts struct {
 	Scale float64
 	Remap map[uint16]uint16
+	// Hotkey moves the cursor to this screen from wherever it is.
+	Hotkey keys.Hotkey
 }
 
 // Config is what the server needs to run.
@@ -56,7 +61,19 @@ type Config struct {
 	Key     string
 	Layout  *layout.Layout
 	Screens map[string]ScreenOpts
-	Hotkey  keys.Hotkey
+	// Hotkey brings the cursor back to the server while another screen has it.
+	Hotkey keys.Hotkey
+
+	// Protection against crossing an edge by accident, on every screen. The
+	// zero values switch it off.
+	//
+	// SwitchDelay: the cursor has to press against the edge this long.
+	// SwitchMods: these modifier keys (keys.Mod*) have to be held.
+	// SwitchCorner: no crossing within this many pixels of a screen corner.
+	SwitchDelay  time.Duration
+	SwitchMods   uint8
+	SwitchCorner int
+
 	// AutoScale adapts the cursor speed to each client's screen: the mouse
 	// movement is measured in the server's pixels, and a screen with more
 	// pixels would otherwise need proportionally more hand movement. The
@@ -165,6 +182,11 @@ type Server struct {
 	buttons uint32            // buttons held down on the focused screen
 	held    map[uint16]uint16 // physical key -> key sent to the focused screen
 
+	hotTargets []string              // per hotkey given to the capture: the screen it leads to
+	lastPos    map[string][2]float64 // where the cursor was when it last left each client
+	press      edgePress             // how long the cursor has been pressing against an edge
+	now        func() time.Time
+
 	focusName atomic.Value // string, for Focus()
 	clip      *clipHub     // clipboard and file transfers
 }
@@ -181,6 +203,8 @@ func New(cfg Config, capture input.Capture) *Server {
 		unknown: map[string]UnknownClient{},
 		byName:  map[string]*session{},
 		held:    map[uint16]uint16{},
+		lastPos: map[string][2]float64{},
+		now:     time.Now,
 	}
 	s.focusName.Store("")
 	s.clip = newClipHub(s)
@@ -338,6 +362,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	defer s.shutdown()
 
 	s.updateArmed()
+	s.setHotkeys()
 	events := s.cap.Events()
 	lastPing := time.Now()
 	for {
@@ -620,7 +645,28 @@ func (s *Server) updateArmed() {
 	s.cap.SetArmedEdges(mask)
 }
 
+// setHotkeys tells the capture which key combinations to watch for. The
+// first one brings the cursor back to the server, and only means something
+// while another screen has it; the others each lead to a client.
+func (s *Server) setHotkeys() {
+	list := []input.Hotkey{{Hotkey: s.cfg.Hotkey, RemoteOnly: true}}
+	s.hotTargets = []string{s.cfg.Name}
+	names := make([]string, 0, len(s.cfg.Screens))
+	for name, o := range s.cfg.Screens {
+		if o.Hotkey.Key != 0 && name != s.cfg.Name {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		list = append(list, input.Hotkey{Hotkey: s.cfg.Screens[name].Hotkey})
+		s.hotTargets = append(s.hotTargets, name)
+	}
+	s.cap.SetHotkeys(list)
+}
+
 func (s *Server) setFocus(sess *session) {
+	s.press = edgePress{}
 	s.focus = sess
 	if sess == nil {
 		s.focusName.Store("")
@@ -661,6 +707,7 @@ func (s *Server) handleCtl(m ctlMsg) {
 // dropFocus returns to the server's own desktop when the focused client can
 // no longer be told anything.
 func (s *Server) dropFocus() {
+	s.remember()
 	s.setFocus(nil)
 	s.buttons = 0
 	clear(s.held)
@@ -692,7 +739,7 @@ func (s *Server) pingAll(now time.Time) {
 func (s *Server) handleEvents(ev input.Event, events <-chan input.Event) {
 	for i := 0; i < maxDrain; i++ {
 		if ev.Kind == input.EvMotion {
-			dx, dy := ev.DX, ev.DY
+			dx, dy, mods := ev.DX, ev.DY, ev.Mods
 			var next input.Event
 			have := false
 		merge:
@@ -702,6 +749,7 @@ func (s *Server) handleEvents(ev input.Event, events <-chan input.Event) {
 					if n.Kind == input.EvMotion {
 						dx += n.DX
 						dy += n.DY
+						mods = n.Mods
 						continue
 					}
 					next, have = n, true
@@ -710,7 +758,7 @@ func (s *Server) handleEvents(ev input.Event, events <-chan input.Event) {
 					break merge
 				}
 			}
-			s.motion(dx, dy)
+			s.motion(dx, dy, mods)
 			if have {
 				ev = next
 				continue
@@ -730,8 +778,10 @@ func (s *Server) handle(ev input.Event) {
 	switch ev.Kind {
 	case input.EvEdge:
 		if s.focus == nil {
-			s.leaveLocal(ev.Side, ev.Frac)
+			s.leaveLocal(ev)
 		}
+	case input.EvHotkey:
+		s.hotkey(int(ev.Code), ev.Drag)
 	case input.EvButton:
 		if s.focus == nil || ev.Code == 0 || ev.Code > 31 {
 			return
@@ -772,14 +822,6 @@ func (s *Server) key(code uint16, state uint8) {
 	}
 	sent, isHeld := s.held[code]
 	if !isHeld {
-		if s.cfg.Hotkey.Match(code, func(c uint16) bool { _, ok := s.held[c]; return ok }) {
-			logx.Infof("release hotkey: back to %s", s.cfg.Name)
-			s.clipMoved(sess.name, s.cfg.Name)
-			s.leaveRemote()
-			s.setFocus(nil)
-			s.cap.Release(0, 0, false)
-			return
-		}
 		sent = code
 		if r, ok := sess.remap[code]; ok {
 			sent = r
@@ -790,16 +832,125 @@ func (s *Server) key(code uint16, state uint8) {
 	sess.send(proto.AppendKey(sess.buf[:0], sent, state))
 }
 
-// leaveLocal is called when the cursor pushes against an edge of the
-// server's own desktop.
-func (s *Server) leaveLocal(side layout.Side, frac float64) {
-	target := s.cfg.Layout.Resolve(s.cfg.Name, side, s.available)
-	sess := s.byName[target]
-	if sess == nil {
+// hotkey is called when the capture saw hotkey number i. The capture has
+// already hidden the key that completed it from every desktop.
+func (s *Server) hotkey(i int, drag bool) {
+	if i < 0 || i >= len(s.hotTargets) {
 		return
 	}
-	s.cap.Grab()
-	s.enter(sess, side.Opposite(), frac)
+	target := s.hotTargets[i]
+	if target == s.cfg.Name {
+		// The release hotkey: back to the server, whatever happens - also
+		// in the middle of a drag.
+		if s.focus == nil {
+			return
+		}
+		logx.Infof("release hotkey: back to %s", s.cfg.Name)
+		s.clipMoved(s.focus.name, s.cfg.Name)
+		s.leaveRemote()
+		s.setFocus(nil)
+		s.cap.Release(0, 0, false)
+		return
+	}
+	sess := s.byName[target]
+	switch {
+	case sess == nil:
+		logx.Debugf("hotkey: %s is not connected", target)
+		return
+	case sess == s.focus:
+		return
+	case drag || s.buttons != 0:
+		return // never switch screens in the middle of a drag
+	}
+	from := s.cfg.Name
+	x, y := s.jumpPoint(sess)
+	if old := s.focus; old != nil {
+		from = old.name
+		s.clipMoved(from, sess.name) // before the old screen hears about it
+		s.leaveRemote()
+		s.enterAt(sess, x, y)
+	} else {
+		s.cap.Grab(true)
+		s.enterAt(sess, x, y)
+		s.clipMoved(from, sess.name)
+	}
+	logx.Infof("hotkey: %s -> %s", from, sess.name)
+}
+
+// jumpPoint is where the cursor appears on a client it is sent to with a
+// hotkey: where it was when it last left that screen, or the middle.
+func (s *Server) jumpPoint(sess *session) (int, int) {
+	p, ok := s.lastPos[sess.name]
+	if !ok {
+		return sess.w / 2, sess.h / 2
+	}
+	x := math.Max(0, math.Min(math.Round(p[0]), float64(sess.w-1)))
+	y := math.Max(0, math.Min(math.Round(p[1]), float64(sess.h-1)))
+	return int(x), int(y)
+}
+
+// remember notes where the cursor is on the focused client, for the next
+// time a hotkey sends it there.
+func (s *Server) remember() {
+	if s.focus != nil {
+		s.lastPos[s.focus.name] = [2]float64{s.cx, s.cy}
+	}
+}
+
+// edgePress measures for how long the cursor has been pressing against each
+// edge of the screen it is on.
+type edgePress struct {
+	since, last [4]time.Time
+}
+
+// push notes that the cursor pressed against side just now and returns for
+// how long it has been doing that without a pause.
+func (p *edgePress) push(side layout.Side, now time.Time) time.Duration {
+	if p.last[side].IsZero() || now.Sub(p.last[side]) > pressGap {
+		p.since[side] = now
+	}
+	p.last[side] = now
+	return now.Sub(p.since[side])
+}
+
+// stop notes that the cursor no longer presses against side.
+func (p *edgePress) stop(side layout.Side) { p.since[side], p.last[side] = time.Time{}, time.Time{} }
+
+// cornerZone returns how many pixels at each end of a screen edge of the
+// given length (0: unknown) count as the corner. It is never more than a
+// quarter of the edge, so that a part to cross through always remains.
+func cornerZone(n, span int) int {
+	if span > 0 && n > span/4 {
+		n = span / 4
+	}
+	return max(n, 0)
+}
+
+// mayCross applies the protection against crossing an edge by accident. The
+// cursor presses against side of some screen, corner pixels away from the
+// nearest corner along an edge that is span pixels long, while the modifier
+// keys mods are held.
+func (s *Server) mayCross(side layout.Side, corner, span int, mods uint8) bool {
+	if corner < cornerZone(s.cfg.SwitchCorner, span) || mods&s.cfg.SwitchMods != s.cfg.SwitchMods {
+		s.press.stop(side)
+		return false
+	}
+	if s.cfg.SwitchDelay <= 0 {
+		return true
+	}
+	return s.press.push(side, s.now()) >= s.cfg.SwitchDelay
+}
+
+// leaveLocal is called when the cursor pushes against an edge of the
+// server's own desktop.
+func (s *Server) leaveLocal(ev input.Event) {
+	target := s.cfg.Layout.Resolve(s.cfg.Name, ev.Side, s.available)
+	sess := s.byName[target]
+	if sess == nil || !s.mayCross(ev.Side, ev.Corner, ev.Span, ev.Mods) {
+		return
+	}
+	s.cap.Grab(false)
+	s.enter(sess, ev.Side.Opposite(), ev.Frac)
 	s.clipMoved(s.cfg.Name, sess.name)
 	logx.Debugf("cursor: %s -> %s", s.cfg.Name, sess.name)
 }
@@ -807,6 +958,11 @@ func (s *Server) leaveLocal(side layout.Side, frac float64) {
 // enter gives the cursor to a client; it appears on entrySide at frac.
 func (s *Server) enter(sess *session, entrySide layout.Side, frac float64) {
 	x, y := layout.EntryPoint(sess.w, sess.h, entrySide, frac, entryInset)
+	s.enterAt(sess, x, y)
+}
+
+// enterAt gives the cursor to a client; it appears at x,y.
+func (s *Server) enterAt(sess *session, x, y int) {
 	s.setFocus(sess)
 	s.cx, s.cy = float64(x), float64(y)
 	s.sentX, s.sentY = int32(x), int32(y)
@@ -824,6 +980,7 @@ func (s *Server) leaveRemote() {
 	if sess == nil {
 		return
 	}
+	s.remember()
 	for phys, sent := range s.held {
 		sess.send(proto.AppendKey(sess.buf[:0], sent, keys.Up))
 		delete(s.held, phys)
@@ -837,7 +994,9 @@ func (s *Server) leaveRemote() {
 	sess.send(proto.AppendLeave(sess.buf[:0]))
 }
 
-func (s *Server) motion(dx, dy float64) {
+// motion moves the cursor of the focused client by dx,dy; mods are the
+// modifier keys held meanwhile.
+func (s *Server) motion(dx, dy float64, mods uint8) {
 	sess := s.focus
 	if sess == nil {
 		return
@@ -846,18 +1005,14 @@ func (s *Server) motion(dx, dy float64) {
 	ny := s.cy + dy*sess.scale
 	maxX, maxY := float64(sess.w-1), float64(sess.h-1)
 
-	// Never switch screens in the middle of a drag.
-	if s.buttons == 0 {
-		if nx < 0 && s.cross(sess, layout.Left, nx, ny) {
-			return
+	beyond := [4]bool{layout.Left: nx < 0, layout.Right: nx > maxX, layout.Top: ny < 0, layout.Bottom: ny > maxY}
+	for side := layout.Left; side <= layout.Bottom; side++ {
+		// Never switch screens in the middle of a drag.
+		if !beyond[side] || s.buttons != 0 {
+			s.press.stop(side)
+			continue
 		}
-		if nx > maxX && s.cross(sess, layout.Right, nx, ny) {
-			return
-		}
-		if ny < 0 && s.cross(sess, layout.Top, nx, ny) {
-			return
-		}
-		if ny > maxY && s.cross(sess, layout.Bottom, nx, ny) {
+		if s.cross(sess, side, nx, ny, mods) {
 			return
 		}
 	}
@@ -867,20 +1022,28 @@ func (s *Server) motion(dx, dy float64) {
 }
 
 // cross moves the cursor from sess through the given side, if a screen is
-// reachable there.
-func (s *Server) cross(sess *session, side layout.Side, nx, ny float64) bool {
+// reachable there and nothing holds the cursor back.
+func (s *Server) cross(sess *session, side layout.Side, nx, ny float64, mods uint8) bool {
 	target := s.cfg.Layout.Resolve(sess.name, side, s.available)
 	if target == "" {
 		return false
 	}
 	maxX, maxY := float64(sess.w-1), float64(sess.h-1)
 	frac := 0.5
+	pos, span := math.Max(0, math.Min(nx, maxX)), sess.w
 	if side == layout.Left || side == layout.Right {
+		pos, span = math.Max(0, math.Min(ny, maxY)), sess.h
 		if maxY > 0 {
-			frac = math.Max(0, math.Min(ny, maxY)) / maxY
+			frac = pos / maxY
 		}
 	} else if maxX > 0 {
-		frac = math.Max(0, math.Min(nx, maxX)) / maxX
+		frac = pos / maxX
+	}
+	// A client reports its desktop as one rectangle: the corners are those
+	// of the whole desktop.
+	corner := int(math.Min(pos, float64(span-1)-pos))
+	if !s.mayCross(side, corner, span, mods) {
+		return false
 	}
 	s.clipMoved(sess.name, target) // before the client hears about it
 	s.leaveRemote()

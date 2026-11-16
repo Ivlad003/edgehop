@@ -130,3 +130,87 @@ func TestHotkey(t *testing.T) {
 		t.Errorf("unknown key must be rejected")
 	}
 }
+
+func TestParseMods(t *testing.T) {
+	cases := map[string]uint8{
+		"":             0,
+		"none":         0,
+		" None ":       0,
+		"ctrl":         ModCtrl,
+		"Control":      ModCtrl,
+		"ctrl+alt":     ModCtrl | ModAlt,
+		"option+shift": ModAlt | ModShift,
+		"cmd":          ModMeta,
+		"win + ctrl":   ModMeta | ModCtrl,
+		"super+shift":  ModMeta | ModShift,
+	}
+	for in, want := range cases {
+		got, err := ParseMods(in)
+		if err != nil || got != want {
+			t.Errorf("ParseMods(%q) = %04b, %v; want %04b", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"ctrl+a", "banana", "ctrl+", "leftctrl"} {
+		if _, err := ParseMods(bad); err == nil {
+			t.Errorf("ParseMods(%q): expected an error", bad)
+		}
+	}
+	if got := ModsText(ModCtrl|ModAlt|ModMeta, "darwin"); got != "Ctrl+Option+Cmd" {
+		t.Errorf("ModsText on a Mac = %q", got)
+	}
+	if got := ModsText(ModAlt|ModShift|ModMeta, "windows"); got != "Alt+Shift+Win" {
+		t.Errorf("ModsText on Windows = %q", got)
+	}
+	if ModsText(0, "linux") != "" {
+		t.Errorf("no modifiers must give an empty text")
+	}
+}
+
+func TestModOf(t *testing.T) {
+	cases := map[uint16]uint8{
+		LeftCtrl: ModCtrl, RightCtrl: ModCtrl, LeftAlt: ModAlt, RightAlt: ModAlt,
+		LeftShift: ModShift, RightShift: ModShift, LeftMeta: ModMeta, RightMeta: ModMeta,
+		A: 0, Space: 0, CapsLock: 0,
+	}
+	for code, want := range cases {
+		if got := ModOf(code); got != want {
+			t.Errorf("ModOf(%s) = %04b, want %04b", Name(code), got, want)
+		}
+	}
+}
+
+// Two hotkeys are the same combination however they were written.
+func TestHotkeyID(t *testing.T) {
+	id := func(s string) string {
+		h, err := ParseHotkey(s)
+		if err != nil {
+			t.Fatalf("ParseHotkey(%q): %v", s, err)
+		}
+		return h.ID()
+	}
+	same := [][2]string{
+		{"ctrl+alt+2", "Alt+Control+2"},
+		{"cmd+f1", "win+f1"},
+		{"ctrl+ctrl+a", "ctrl+a"},
+		{"f13", " F13 "},
+	}
+	for _, p := range same {
+		if id(p[0]) != id(p[1]) {
+			t.Errorf("%q and %q should be the same hotkey", p[0], p[1])
+		}
+	}
+	different := [][2]string{
+		{"ctrl+alt+2", "ctrl+alt+3"},
+		{"ctrl+2", "ctrl+alt+2"},
+		{"ctrl+2", "leftctrl+2"}, // either Ctrl key against one particular key
+		{"ctrl+alt+2", "ctrl+shift+2"},
+	}
+	for _, p := range different {
+		if id(p[0]) == id(p[1]) {
+			t.Errorf("%q and %q should be different hotkeys", p[0], p[1])
+		}
+	}
+	if id("") != "" || id("none") != "" {
+		t.Errorf("an empty hotkey must have an empty ID")
+	}
+}

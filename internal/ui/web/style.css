@@ -214,6 +214,7 @@ input[type="number"] { max-width: 140px; }
 .opt-row .o-name { font-weight: 600; min-width: 110px; overflow-wrap: anywhere; }
 .opt-row label { display: flex; align-items: center; gap: 6px; font-size: 14px; }
 .opt-row input[type="number"] { width: 84px; padding: 5px 8px; }
+.opt-row input[type="text"] { width: 150px; padding: 5px 8px; }
 .opt-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
 
 .advanced { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }

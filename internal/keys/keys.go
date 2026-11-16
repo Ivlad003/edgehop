@@ -46,6 +46,7 @@ const (
 	Enter      = 28
 	LeftCtrl   = 29
 	A          = 30
+	L          = 38
 	Semicolon  = 39
 	Apostrophe = 40
 	Grave      = 41

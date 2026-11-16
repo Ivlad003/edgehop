@@ -76,6 +76,17 @@ const TEXT = {
     speedHint: "Швидкість курсора підбирається автоматично під розмір кожного екрана. Число нижче множить її: 1 — як є, 1.5 — у півтора раза швидше.",
     speed: 'Швидкість курсора',
     swap: 'Поміняти Alt і Win/Cmd (PC-клавіатура ↔ Mac)',
+    jumpKey: 'Клавіші переходу',
+    jumpHint: 'Клавіші переходу переносять курсор на цей екран звідусіль — туди, де він там був востаннє. Наприклад ctrl+alt+2. Порожньо — без клавіш.',
+    jumpNote: 'перехід: {0}',
+    guardTitle: 'Захист від випадкового переходу',
+    guardHint: 'Щоб курсор не тікав на інший комп\'ютер, коли ви просто довели його до краю. Діє на всіх екранах. Типово все вимкнено.',
+    switchDelay: 'Затримка на краю, мс',
+    switchDelayHint: 'Стільки курсор має тиснути в край екрана, перш ніж перейти. 0 — переходить одразу. Спробуйте 250.',
+    switchKeys: 'Перехід лише з клавішами',
+    switchKeysHint: 'Курсор переходить через край, лише поки натиснуто ці клавіші: ctrl, alt, shift, win (cmd) або кілька через «+». Порожньо — клавіші не потрібні.',
+    switchCorner: 'Кути без переходу, пікселів',
+    switchCornerHint: 'Так близько до кута екрана курсор не переходить — гарячі кути й кнопка «Пуск» лишаються досяжними. 0 — вимкнено. Спробуйте 40.',
     advanced: 'Додатково',
     port: 'Порт',
     portHint: 'TCP і UDP. Його треба дозволити у брандмауері цього комп\'ютера.',
@@ -178,6 +189,17 @@ const TEXT = {
     speedHint: "The cursor speed is matched to the size of each screen automatically. The number below multiplies it: 1 keeps it, 1.5 makes it one and a half times faster.",
     speed: 'Cursor speed',
     swap: 'Swap Alt and Win/Cmd (PC keyboard ↔ Mac)',
+    jumpKey: 'Jump hotkey',
+    jumpHint: 'The jump hotkey moves the cursor to that screen from anywhere — to where it last was there. For example ctrl+alt+2. Empty: no hotkey.',
+    jumpNote: 'jump: {0}',
+    guardTitle: 'Protection against crossing by accident',
+    guardHint: 'Keeps the cursor from slipping to another computer when you merely moved it to the edge. Applies to every screen. Everything is off by default.',
+    switchDelay: 'Delay at the edge, ms',
+    switchDelayHint: 'The cursor has to press against the screen edge this long before it crosses. 0: it crosses at once. Try 250.',
+    switchKeys: 'Cross only with keys held',
+    switchKeysHint: 'The cursor crosses an edge only while these keys are held: ctrl, alt, shift, win (cmd), or several joined with “+”. Empty: no keys needed.',
+    switchCorner: 'Corners without crossing, pixels',
+    switchCornerHint: 'This close to a screen corner the cursor does not cross, so hot corners and the Start button stay reachable. 0: off. Try 40.',
     advanced: 'Advanced',
     port: 'Port',
     portHint: 'TCP and UDP. It must be allowed in this computer\'s firewall.',
@@ -301,7 +323,7 @@ function otherScreens(cfg) {
 
 function ensureScreen(name) {
   if (!form.screens) form.screens = {};
-  if (!form.screens[name]) form.screens[name] = { scale: 1, swapAltMeta: false };
+  if (!form.screens[name]) form.screens[name] = { scale: 1, swapAltMeta: false, hotkey: '' };
   return form.screens[name];
 }
 
@@ -327,6 +349,11 @@ function renderForm() {
   $('f-port').value = form.port || S.defaultPort;
   $('f-hotkey').value = form.releaseHotkey || '';
   $('f-hide').checked = !!form.hideCursor;
+  $('f-delay').value = form.switchDelayMs || 0;
+  $('f-switchkeys').value = form.switchKeys || '';
+  $('f-corner').value = form.switchCorner || 0;
+  // Settings that are in use must not hide in a folded section.
+  if (form.switchDelayMs || form.switchKeys || form.switchCorner) $('guard-details').open = true;
   $('f-size').value = form.screenSize || '';
   $('f-size').placeholder = S.desktopW && S.desktopH ? S.desktopW + 'x' + S.desktopH : '1920x1080';
   $('row-add').placeholder = t('addPlaceholder');
@@ -375,9 +402,12 @@ function renderRow() {
     const swap = el('input', { type: 'checkbox' });
     swap.checked = !!o.swapAltMeta;
     swap.addEventListener('change', () => { ensureScreen(name).swapAltMeta = swap.checked; });
+    const jump = el('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'ctrl+alt+2', value: o.hotkey || '' });
+    jump.addEventListener('input', () => { ensureScreen(name).hotkey = jump.value; });
     opts.append(el('div', { class: 'opt-row' },
       el('span', { class: 'o-name', text: name }),
       el('label', {}, el('span', { text: t('speed') }), speed),
+      el('label', {}, el('span', { text: t('jumpKey') }), jump),
       el('label', {}, swap, el('span', { text: t('swap') }))));
   }
 }
@@ -443,6 +473,9 @@ async function save(start) {
   cfg.name = selfName();
   cfg.port = parseInt(cfg.port, 10) || S.defaultPort;
   cfg.clipboardMaxMB = parseInt(cfg.clipboardMaxMB, 10) || 200;
+  cfg.switchDelayMs = parseInt(cfg.switchDelayMs, 10) || 0;
+  cfg.switchCorner = parseInt(cfg.switchCorner, 10) || 0;
+  cfg.switchKeys = (cfg.switchKeys || '').trim();
   if (cfg.role === 'client') { cfg.row = []; cfg.screens = {}; }
   busy = true;
   setButtons();
@@ -495,6 +528,7 @@ function screenBox(s, focusName, running) {
     focused ? el('span', { class: 'cursor', text: '● ' + t('cursor') }) : null,
     el('div', { class: 's-name', text: s.name }),
     el('div', { class: 's-info', text: info }),
+    s.hotkey ? el('div', { class: 's-info', text: t('jumpNote', s.hotkey) }) : null,
     el('div', { class: 's-state', text: state }));
 }
 
@@ -566,7 +600,8 @@ function renderLive(force) {
     line.textContent = S.configExists && !S.configError ? t('stoppedLine') : t('needSetup');
     if (S.configExists && S.config.role === 'server') {
       for (const name of S.config.row || []) {
-        screens.append(screenBox({ name: name, self: name === S.config.name }, '', false));
+        const opt = (S.config.screens || {})[name] || {};
+        screens.append(screenBox({ name: name, self: name === S.config.name, hotkey: opt.hotkey || '' }, '', false));
       }
     }
   } else if (!st) {
@@ -982,6 +1017,9 @@ function init() {
   $('f-port').addEventListener('input', () => { form.port = parseInt($('f-port').value, 10) || 0; });
   $('f-hotkey').addEventListener('input', () => { form.releaseHotkey = $('f-hotkey').value; });
   $('f-hide').addEventListener('change', () => { form.hideCursor = $('f-hide').checked; });
+  $('f-delay').addEventListener('input', () => { form.switchDelayMs = parseInt($('f-delay').value, 10) || 0; });
+  $('f-switchkeys').addEventListener('input', () => { form.switchKeys = $('f-switchkeys').value; });
+  $('f-corner').addEventListener('input', () => { form.switchCorner = parseInt($('f-corner').value, 10) || 0; });
   $('f-size').addEventListener('input', () => { form.screenSize = $('f-size').value; });
   $('f-clip').addEventListener('change', () => { form.clipboard = $('f-clip').checked; });
   $('f-clipmax').addEventListener('input', () => { form.clipboardMaxMB = parseInt($('f-clipmax').value, 10) || 0; });

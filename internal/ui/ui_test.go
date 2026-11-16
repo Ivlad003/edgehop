@@ -241,7 +241,8 @@ func TestConfigThroughThePage(t *testing.T) {
 		Role: "server", Name: "desk", Key: "secret", Port: 5001,
 		Row:           []string{"lap", "desk", "mac"},
 		ReleaseHotkey: "ctrl+alt+f12", HideCursor: true,
-		Screens: map[string]config.FormScreen{"mac": {Scale: 1.5, SwapAltMeta: true}},
+		SwitchDelayMS: 250, SwitchKeys: "ctrl", SwitchCorner: 40,
+		Screens: map[string]config.FormScreen{"mac": {Scale: 1.5, SwapAltMeta: true, Hotkey: "ctrl+alt+2"}},
 	}
 	resp, body = r.do("/api/config", map[string]any{"config": form, "start": false}, true, nil)
 	if resp.StatusCode != 200 {
@@ -255,9 +256,27 @@ func TestConfigThroughThePage(t *testing.T) {
 		cfg.Screens["mac"].Scale != 1.5 || cfg.Screens["mac"].Remap["alt"] != "meta" {
 		t.Fatalf("written config = %+v", cfg)
 	}
+	if cfg.SwitchDelayMS != 250 || cfg.SwitchKeys != "ctrl" || cfg.SwitchCorner != 40 || cfg.Screens["mac"].Hotkey != "ctrl+alt+2" {
+		t.Fatalf("hotkey and edge protection were not written: %+v", cfg)
+	}
 	st = r.state()
 	if !st.ConfigExists || st.Config.Port != 5001 || !st.Config.Screens["mac"].SwapAltMeta || st.Engine.Running {
 		t.Fatalf("state after save = %+v", st)
+	}
+	if st.Config.SwitchDelayMS != 250 || st.Config.SwitchKeys != "ctrl" || st.Config.SwitchCorner != 40 || st.Config.Screens["mac"].Hotkey != "ctrl+alt+2" {
+		t.Fatalf("the page does not get the hotkey and the edge protection back: %+v", st.Config)
+	}
+
+	// A setting the page cannot make sense of is refused with the reason, and
+	// the file stays as it was.
+	bad := form
+	bad.SwitchKeys = "ctrl+q"
+	resp, body = r.do("/api/config", map[string]any{"config": bad, "start": false}, true, nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(body), "switch_keys") {
+		t.Fatalf("bad switch_keys: %d %s", resp.StatusCode, body)
+	}
+	if cfg, err := config.Load(r.cfg); err != nil || cfg.SwitchKeys != "ctrl" {
+		t.Fatalf("a refused save changed the file: %+v, %v", cfg, err)
 	}
 
 	// A broken file is reported, and the form falls back to defaults.

@@ -290,6 +290,7 @@ type macCapture struct {
 	buttons      uint32
 	localButtons uint32
 	kt           keyTracker
+	keyb         keyboard
 	modDown      map[uint16]bool
 }
 
@@ -374,6 +375,11 @@ func (c *macCapture) handle(etype uint32, ev uintptr) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.remote && (etype == evtKeyDown || etype == evtFlagsChanged) {
+		// In local mode macOS follows the keyboard too, and every key event
+		// says which modifier keys it takes for held.
+		c.keyb.keep(macMods(cgEventGetFlags(ev)))
+	}
 	switch etype {
 	case evtMouseMoved, evtLeftDragged, evtRightDragged, evtOtherDragged:
 		if c.remote {
@@ -384,7 +390,7 @@ func (c *macCapture) handle(etype uint32, ev uintptr) bool {
 			dx := cgEventGetIntegerValueField(ev, fldDeltaX)
 			dy := cgEventGetIntegerValueField(ev, fldDeltaY)
 			if dx != 0 || dy != 0 {
-				emit(c.events, Event{Kind: EvMotion, DX: float64(dx), DY: float64(dy)})
+				emit(c.events, Event{Kind: EvMotion, DX: float64(dx), DY: float64(dy), Mods: c.keyb.mods()})
 			}
 			return true
 		}
@@ -396,7 +402,11 @@ func (c *macCapture) handle(etype uint32, ev uintptr) bool {
 			p := cgEventGetLocation(ev)
 			x, y := int(math.Floor(p.X)), int(math.Floor(p.Y))
 			if side, ok := layout.FirstSide(c.desk.Edges(x, y) & c.armed); ok {
-				emit(c.events, Event{Kind: EvEdge, Side: side, Frac: c.desk.Frac(side, x, y)})
+				sys := macMods(cgEventGetFlags(ev))
+				c.keyb.keep(sys)
+				corner, span := c.desk.Corner(side, x, y)
+				emit(c.events, Event{Kind: EvEdge, Side: side, Frac: c.desk.Frac(side, x, y),
+					Mods: sys | c.keyb.mods(), Corner: corner, Span: span})
 			}
 		}
 		return false
@@ -472,7 +482,31 @@ func (c *macCapture) handle(etype uint32, ev uintptr) bool {
 	return c.remote
 }
 
+// macMods turns the modifier flags of an event into keys.Mod* bits.
+func macMods(flags uint64) uint8 {
+	var m uint8
+	if flags&flagControl != 0 {
+		m |= keys.ModCtrl
+	}
+	if flags&flagOption != 0 {
+		m |= keys.ModAlt
+	}
+	if flags&flagShift != 0 {
+		m |= keys.ModShift
+	}
+	if flags&flagCommand != 0 {
+		m |= keys.ModMeta
+	}
+	return m
+}
+
 func (c *macCapture) keyEvent(code uint16, down bool) bool {
+	if hit, eat := c.keyb.onKey(c.remote, code, down); eat {
+		if hit >= 0 {
+			emit(c.events, Event{Kind: EvHotkey, Code: uint16(hit), Drag: c.buttons != 0})
+		}
+		return true
+	}
 	forward, state, swallow := c.kt.onKey(c.remote, code, down)
 	if forward {
 		emit(c.events, Event{Kind: EvKey, Code: code, State: state})
@@ -509,7 +543,7 @@ func (c *macCapture) button(b uint16, down bool) bool {
 
 func (c *macCapture) Events() <-chan Event { return c.events }
 
-func (c *macCapture) Grab() {
+func (c *macCapture) Grab(home bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.remote {
@@ -517,7 +551,9 @@ func (c *macCapture) Grab() {
 	}
 	// Hide the cursor and freeze it where it is. While frozen, mouse events
 	// keep arriving with their movement in the delta fields, and no local
-	// application sees the cursor move. (Same recipe as Deskflow.)
+	// application sees the cursor move. (Same recipe as Deskflow.) A Release
+	// without a warp finds the cursor at this very place, so there is
+	// nothing to remember for home.
 	if c.hide {
 		cgDisplayHideCursor(cgMainDisplayID())
 		c.hidden = true
@@ -557,6 +593,8 @@ func (c *macCapture) SetArmedEdges(mask uint8) {
 	c.armed = mask
 	c.mu.Unlock()
 }
+
+func (c *macCapture) SetHotkeys(list []Hotkey) { c.keyb.setHotkeys(list) }
 
 func (c *macCapture) Size() (int, int) {
 	d := layout.NewDesktop(Monitors())

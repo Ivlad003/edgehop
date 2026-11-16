@@ -6,8 +6,9 @@
 #            clipboard through xclip on a virtual X display
 #   macOS    input through the window server (posted events and an event
 #            tap); clipboard through NSPasteboard
-#   Windows  clipboard through the Win32 API (input is checked on a real
-#            desktop with `edgehop selftest --grab`)
+#   Windows  input through the low-level hooks and SendInput (the same that
+#            `edgehop selftest --grab` checks on a real desktop, plus hotkeys
+#            and screen edges); clipboard through the Win32 API
 name: live-input
 
 on:
@@ -74,6 +75,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: stable
+      - name: Capture and injection through the low-level hooks
+        shell: bash   # with pipefail, so a failing test is not hidden by tee
+        run: |
+          EDGEHOP_LIVE=1 go test ./internal/input/ -run Live -v -timeout 180s 2>&1 | tee live.log
+          if grep -q -- '--- SKIP' live.log; then echo "::error::the live input tests were skipped"; exit 1; fi
       - name: Clipboard through the Win32 API
         shell: bash
         run: |

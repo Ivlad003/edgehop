@@ -155,8 +155,67 @@ func TestLiveMac(t *testing.T) {
 	}
 	t.Log("capture: the screen edge is detected")
 
+	// The edge event also tells how far the nearest corner is and which
+	// modifier keys are held.
+	if got[0].Mods != 0 {
+		t.Errorf("edge with no key held reports the modifier keys %04b", got[0].Mods)
+	}
+	if mons := Monitors(); len(mons) == 1 {
+		if e := got[0]; e.Span != h || e.Corner < h/2-2 || e.Corner > h/2 {
+			t.Errorf("edge in the middle of a %d pixel side: corner %d of %d", h, e.Corner, e.Span)
+		}
+	}
+	touchEdge := func(what string, wantMods uint8) {
+		t.Helper()
+		inj.MoveAbs(w/2, h/2)
+		drain(c.Events())
+		inj.MoveAbs(w-1, h/3)
+		got := drain(c.Events())
+		if len(got) == 0 || got[0].Kind != EvEdge || got[0].Side != layout.Right {
+			t.Fatalf("touching the edge %s: got %+v, want an edge event", what, got)
+		}
+		if got[0].Mods != wantMods {
+			t.Errorf("touching the edge %s: modifier keys %04b, want %04b", what, got[0].Mods, wantMods)
+		}
+	}
+	inj.Key(keys.LeftCtrl, keys.Down)
+	touchEdge("with Ctrl held", keys.ModCtrl)
+	inj.Key(keys.RightShift, keys.Down)
+	touchEdge("with Ctrl and Shift held", keys.ModCtrl|keys.ModShift)
+	inj.Key(keys.LeftCtrl, keys.Up)
+	inj.Key(keys.RightShift, keys.Up)
+	touchEdge("after the keys were released", 0)
+	t.Log("capture: the edge event tells the modifier keys held")
+
+	// Hotkeys in local mode. F13 and F16 are keys no Mac keyboard has, so
+	// nothing on this desktop reacts to them.
+	const f13, f16 = keys.F13, keys.F13 + 3
+	c.SetHotkeys([]Hotkey{
+		{Hotkey: mustHotkey(t, "ctrl+alt+f16"), RemoteOnly: true},
+		{Hotkey: mustHotkey(t, "ctrl+alt+f13")},
+	})
+	inj.MoveAbs(w/2, h/2)
+	drain(c.Events())
+	inj.Key(keys.LeftCtrl, keys.Down)
+	inj.Key(keys.LeftAlt, keys.Down)
+	inj.Key(f13, keys.Down)
+	inj.Key(f13, keys.Repeat)
+	inj.Key(f13, keys.Up)
+	waitCaptured(t, "a hotkey in local mode", c.Events(), Event{Kind: EvHotkey, Code: 1})
+	// The other one only counts in remote mode: here it is ordinary typing.
+	inj.Key(f16, keys.Down)
+	inj.Key(f16, keys.Up)
+	inj.Key(keys.LeftAlt, keys.Up)
+	inj.Key(keys.LeftCtrl, keys.Up)
+	if got := drain(c.Events()); len(got) != 0 {
+		t.Fatalf("a remote-only hotkey in local mode reported events: %+v", got)
+	}
+	t.Log("capture: a hotkey is reported in local mode, a remote-only one is not")
+	inj.MoveAbs(w-1, h/2)
+	drain(c.Events())
+
 	// Remote mode: everything is swallowed and reported.
-	c.Grab()
+	c.Grab(false)
 	time.Sleep(200 * time.Millisecond)
 	parkX, parkY := cursor()
 	drain(c.Events())
@@ -237,6 +296,31 @@ func TestLiveMac(t *testing.T) {
 		Event{Kind: EvKey, Code: keys.A, State: keys.Down},
 		Event{Kind: EvKey, Code: keys.A, State: keys.Repeat},
 		Event{Kind: EvKey, Code: keys.A, State: keys.Up})
+
+	// Hotkeys in remote mode: the modifier keys are forwarded like any key,
+	// the key that completes the hotkey is not - no press, no repeat, no
+	// release. Mouse movement tells which modifier keys are held.
+	inj.Key(keys.LeftCtrl, keys.Down)
+	inj.Key(keys.LeftAlt, keys.Down)
+	inj.Key(f16, keys.Down)
+	inj.Key(f16, keys.Repeat)
+	inj.Key(f16, keys.Up)
+	inj.Key(f13, keys.Down)
+	inj.Key(f13, keys.Up)
+	mouseDelta(4, 2)
+	inj.Key(keys.LeftAlt, keys.Up)
+	inj.Key(keys.LeftCtrl, keys.Up)
+	mouseDelta(-4, -2)
+	waitCaptured(t, "hotkeys in remote mode", c.Events(),
+		Event{Kind: EvKey, Code: keys.LeftCtrl, State: keys.Down},
+		Event{Kind: EvKey, Code: keys.LeftAlt, State: keys.Down},
+		Event{Kind: EvHotkey, Code: 0},
+		Event{Kind: EvHotkey, Code: 1},
+		Event{Kind: EvMotion, DX: 4, DY: 2, Mods: keys.ModCtrl | keys.ModAlt},
+		Event{Kind: EvKey, Code: keys.LeftAlt, State: keys.Up},
+		Event{Kind: EvKey, Code: keys.LeftCtrl, State: keys.Up},
+		Event{Kind: EvMotion, DX: -4, DY: -2})
+	t.Log("capture: hotkeys are reported in remote mode and their last key is swallowed")
 
 	for b := uint8(keys.ButtonLeft); b <= keys.ButtonForward; b++ {
 		inj.Button(b, true)

@@ -179,6 +179,22 @@ func (d Desktop) Frac(side Side, x, y int) float64 {
 	return frac(x-b.X, b.W)
 }
 
+// Corner tells how far the point is, in pixels along the given side, from the
+// nearest corner of the monitor it is on, and how long that side of the
+// monitor is. Corners are where a system keeps its own things - hot corners,
+// the Start button - so a cursor aiming at one is not on its way out.
+func (d Desktop) Corner(side Side, x, y int) (dist, span int) {
+	m, ok := d.monitorNear(x, y)
+	if !ok {
+		return 0, 0
+	}
+	pos, span := clamp(x, m.X, m.Right()-1)-m.X, m.W
+	if side == Left || side == Right {
+		pos, span = clamp(y, m.Y, m.Bottom()-1)-m.Y, m.H
+	}
+	return min(pos, span-1-pos), span
+}
+
 // Entry returns the point where the cursor appears when it enters the desktop
 // through side at the given fraction along that side. inset moves the point
 // a few pixels inside so that it does not immediately trigger the edge again.

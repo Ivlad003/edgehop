@@ -148,3 +148,34 @@ func TestParseSide(t *testing.T) {
 		t.Errorf("Opposite is wrong")
 	}
 }
+
+func TestCorner(t *testing.T) {
+	// A wide monitor with a smaller one to its right, top edges aligned.
+	d := NewDesktop([]Rect{{0, 0, 1920, 1080}, {1920, 0, 1280, 720}})
+	cases := []struct {
+		side       Side
+		x, y       int
+		dist, span int
+	}{
+		{Left, 0, 0, 0, 1080},
+		{Left, 0, 30, 30, 1080},
+		{Left, 0, 540, 539, 1080}, // past the middle the far corner is nearer
+		{Left, 0, 1079, 0, 1080},
+		{Left, -5, 1050, 29, 1080},     // beyond the edge counts as on it
+		{Right, 3199, 700, 19, 720},    // the small monitor has its own corners
+		{Right, 3199, 800, 0, 720},     // below it: clamped to its bottom corner
+		{Top, 100, 0, 100, 1920},       //
+		{Top, 1900, 0, 19, 1920},       // near the inner corner of the big monitor
+		{Top, 1925, 0, 5, 1280},        // just across, on the small one
+		{Bottom, 2560, 719, 639, 1280}, //
+	}
+	for _, c := range cases {
+		dist, span := d.Corner(c.side, c.x, c.y)
+		if dist != c.dist || span != c.span {
+			t.Errorf("Corner(%s, %d,%d) = %d of %d, want %d of %d", c.side, c.x, c.y, dist, span, c.dist, c.span)
+		}
+	}
+	if dist, span := (Desktop{}).Corner(Left, 0, 0); dist != 0 || span != 0 {
+		t.Errorf("a desktop without monitors: %d of %d", dist, span)
+	}
+}
